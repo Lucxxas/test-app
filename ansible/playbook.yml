@@ -92,17 +92,17 @@
             home: /home/admin
             create_home: yes
     
-    - name: Supprimer le dépôt existant s'il bloque
-      ansible.builtin.file:
-        path: "{{ dest_dir }}"
-        state: absent
-      when: dest_dir_stat.stat.exists and not dest_dir_stat.stat.isdir
-    
-    - name: Vérifier l'état du répertoire de destination
-      ansible.builtin.stat:
-        path: "{{ dest_dir }}"
-      register: dest_dir_stat
-
+        - name: Vérifier l'état du répertoire de destination
+          ansible.builtin.stat:
+            path: "{{ dest_dir }}"
+          register: dest_dir_stat
+        
+        - name: Supprimer le dépôt existant s'il bloque
+          ansible.builtin.file:
+            path: "{{ dest_dir }}"
+            state: absent
+          when: dest_dir_stat.stat.exists and not dest_dir_stat.stat.isdir
+        
 
     - name: Cloner le repository AWS 3-tier
       ansible.builtin.git:
