@@ -13,7 +13,13 @@
         web_ip: "{{ ansible_env.TF_VAR_web_instance_ip }}"
         app_ip: "{{ ansible_env.TF_VAR_app_instance_ip }}"
         db_endpoint: "{{ ansible_env.TF_VAR_database_endpoint }}"
-        ssh_private_key: "{{ ansible_env.TF_VAR_ssh_private_key }}"
+
+    - name: Get SSH key from SSM Parameter Store
+      shell: |
+        aws ssm get-parameter --name "/ssh/TP-FINAL-keypair/private" --with-decryption --query 'Parameter.Value' --output text > /tmp/ssh_key.pem
+        chmod 600 /tmp/ssh_key.pem
+      environment:
+        AWS_DEFAULT_REGION: us-east-1
 
     - name: Debug - Show retrieved values
       debug:
@@ -21,7 +27,7 @@
           - "WEB_IP: {{ web_ip }}"
           - "APP_IP: {{ app_ip }}"
           - "DB_ENDPOINT: {{ db_endpoint }}"
-          - "SSH_KEY: {{ 'PRESENT' if ssh_private_key else 'MISSING' }}"
+          - "SSH_KEY: Retrieved from SSM"
 
     - name: Create SSH key file
       copy:
