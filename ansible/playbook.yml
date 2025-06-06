@@ -10,9 +10,18 @@
   tasks:
     - name: Get outputs from Spacelift environment variables
       set_fact:
-        web_ip: "{{ ansible_env.TF_VAR_web_instance_ip }}"
-        app_ip: "{{ ansible_env.TF_VAR_app_instance_ip }}"
-        db_endpoint: "{{ ansible_env.TF_VAR_database_endpoint }}"
+        web_ip: "{{ ansible_env.TF_VAR_web_instance_ip | default('') }}"
+        app_ip: "{{ ansible_env.TF_VAR_app_instance_ip | default('') }}"
+        db_endpoint: "{{ ansible_env.TF_VAR_database_endpoint | default('') }}"
+
+    - name: Debug - Show environment variables
+      debug:
+        msg: "Available TF_VAR variables: {{ ansible_env | dict2items | selectattr('key', 'match', 'TF_VAR_.*') | list }}"
+
+    - name: Fail if required variables are missing
+      fail:
+        msg: "Required Terraform outputs not found. Please check Dependencies configuration."
+      when: web_ip == "" or app_ip == "" or db_endpoint == ""
 
     - name: Get SSH key from SSM Parameter Store
       shell: |
