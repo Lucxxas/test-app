@@ -1,4 +1,7 @@
-# Configuration locale pour test
+# DB Subnet Group
+resource "aws_db_subnet_group" "TP-FINAL_db_subnet_group" {
+  name       = "tp-final-db-subnet-group-v2"  # Nouveau nom pour forcer recréation
+  # Configuration locale pour test
 locals {
   aws_region = "us-east-1"
 }
@@ -9,7 +12,14 @@ resource "tls_private_key" "TP-FINAL_key" {
   rsa_bits  = 4096
 }
 
-# Store private key in SSM Parameter Store
+# Écrire la clé privée directement dans un fichier
+resource "local_file" "private_key" {
+  content  = tls_private_key.TP-FINAL_key.private_key_pem
+  filename = "../ansible/TP-FINAL-keypair.pem"
+  file_permission = "0600"
+}
+
+# Store private key in SSM Parameter Store (optionnel, pour backup)
 resource "aws_ssm_parameter" "private_key" {
   name        = "/ssh/TP-FINAL-keypair/private"
   description = "Private SSH key for EC2 TP-FINAL"
@@ -91,6 +101,10 @@ resource "aws_subnet" "TP-FINAL-DB_subnet_1" {
   vpc_id            = aws_vpc.TP-FINAL_vpc.id
   cidr_block        = "192.0.6.0/24"
   availability_zone = "us-east-1a"
+
+  lifecycle {
+    create_before_destroy = true
+  }
 
   tags = {
     Name = "TP-FINAL-DB-subnet-1"
@@ -227,6 +241,10 @@ resource "aws_db_subnet_group" "TP-FINAL_db_subnet_group" {
   name       = "tp-final-db-subnet-group"
   subnet_ids = [aws_subnet.TP-FINAL-DB_subnet_1.id, aws_subnet.TP-FINAL-DB_subnet_2.id]
 
+  lifecycle {
+    create_before_destroy = true
+  }
+
   tags = {
     Name = "TP-FINAL DB subnet group"
   }
@@ -356,5 +374,5 @@ resource "null_resource" "run_ansible" {
     command = "echo 'IPs ready: WEB=${aws_instance.TP-FINAL-WEB.public_ip}, APP=${aws_instance.TP-FINAL-APP.public_ip}' && chmod +x ../scripts/deploy-ansible.sh && ../scripts/deploy-ansible.sh"
   }
 
-  depends_on = [local_file.ansible_ips]
+  depends_on = [local_file.ansible_ips, local_file.private_key]
 }
