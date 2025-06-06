@@ -101,16 +101,16 @@
         create_home: yes
         state: present
 
-    - name: Ensure user directories exist
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: directory
-        owner: "{{ item.split('/')[-1] }}"
-        group: "{{ item.split('/')[-1] }}"
-        mode: '0755'
-      loop:
-        - /home/appuser
-        - /home/admin
+      - name: Ensure user directories exist with correct ownership
+        ansible.builtin.file:
+          path: "{{ item.path }}"
+          state: directory
+          owner: "{{ item.owner }}"
+          group: "{{ item.group }}"
+          mode: '0755'
+        loop:
+          - { path: "/home/appuser", owner: "appuser", group: "appuser" }
+          - { path: "/home/admin", owner: "admin", group: "admin" }
 
     - name: Cloner le repository AWS 3-tier
       ansible.builtin.git:
@@ -164,6 +164,7 @@
         ansible.builtin.command: which nginx
         register: nginx_check
         ignore_errors: yes
+        changed_when: false
 
       # Fallback: install nginx from source for Amazon Linux
       - name: Install nginx from source (Amazon Linux fallback)
@@ -298,7 +299,10 @@
             ansible.builtin.systemd:
               daemon_reload: yes
 
-        when: nginx_check.rc != 0
+        when: 
+          - nginx_check is defined
+          - nginx_check.rc is defined
+          - nginx_check.rc != 0
 
       # Install Node.js BEFORE trying to use npm
       - name: Install Node.js and npm pour build React (Amazon Linux)
@@ -321,6 +325,7 @@
           npm --version
         register: node_version
         ignore_errors: yes
+        changed_when: false
 
       - name: Debug Node.js version
         debug:
@@ -422,6 +427,7 @@
           npm --version
         register: node_version_app
         ignore_errors: yes
+        changed_when: false
 
       - name: Debug Node.js version on app server
         debug:
@@ -432,6 +438,7 @@
         ansible.builtin.npm:
           name: pm2
           global: yes
+        ignore_errors: yes
 
       - name: Vérifier le contenu du dossier app-tier
         ansible.builtin.find:
