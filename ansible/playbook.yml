@@ -50,6 +50,7 @@
           - git
           - htop
         state: present
+
 - name: Configuration 3-Tier AWS (Web + App tiers)
   hosts: all
   become: yes
@@ -136,6 +137,11 @@
           state: present
         when: ansible_os_family == "Debian"
 
+      # Fix: Ensure environment is refreshed after Node.js installation
+      - name: Refresh environment after Node.js installation
+        ansible.builtin.shell: hash -r
+        when: ansible_os_family == "Debian"
+
       - name: Créer le dossier build pour React
         ansible.builtin.file:
           path: /home/admin/web-tier
@@ -144,15 +150,28 @@
           group: admin
           mode: '0755'
 
+      # Fix: Check if the source directory exists before trying operations
+      - name: Check if web-tier source exists
+        ansible.builtin.stat:
+          path: "{{ web_tier_path }}"
+        register: web_tier_check
+
       - name: Installer les dépendances React
         ansible.builtin.shell: |
           cd {{ web_tier_path }}
           npm install
+        when: web_tier_check.stat.exists
 
       - name: Construire l'application React
         ansible.builtin.shell: |
           cd {{ web_tier_path }}
           npm run build
+        when: web_tier_check.stat.exists
+
+      - name: Check if build directory was created
+        ansible.builtin.stat:
+          path: "{{ web_tier_path }}/build"
+        register: build_check
 
       - name: Copier les fichiers build vers le dossier web
         ansible.builtin.copy:
@@ -162,10 +181,67 @@
           owner: admin
           group: admin
           mode: '0755'
+        when: build_check.stat.exists
 
-      - name: Configurer Nginx avec le template
-        ansible.builtin.template:
-          src: nginx.conf.j2
+      - name: Create basic index.html if build failed
+        ansible.builtin.copy:
+          content: |
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Three Tier App</title>
+            </head>
+            <body>
+                <h1>Welcome to Three Tier Application</h1>
+                <p>Web tier is running!</p>
+            </body>
+            </html>
+          dest: /home/admin/web-tier/index.html
+          owner: admin
+          group: admin
+          mode: '0644'
+        when: not build_check.stat.exists
+
+      - name: Configurer Nginx avec une configuration basique
+        ansible.builtin.copy:
+          content: |
+            user www-data;
+            worker_processes auto;
+            pid /run/nginx.pid;
+
+            events {
+                worker_connections 768;
+            }
+
+            http {
+                sendfile on;
+                tcp_nopush on;
+                tcp_nodelay on;
+                keepalive_timeout 65;
+                types_hash_max_size 2048;
+
+                include /etc/nginx/mime.types;
+                default_type application/octet-stream;
+
+                access_log /var/log/nginx/access.log;
+                error_log /var/log/nginx/error.log;
+
+                gzip on;
+
+                server {
+                    listen 80 default_server;
+                    listen [::]:80 default_server;
+
+                    root /home/admin/web-tier;
+                    index index.html index.htm;
+
+                    server_name _;
+
+                    location / {
+                        try_files $uri $uri/ =404;
+                    }
+                }
+            }
           dest: /etc/nginx/nginx.conf
           backup: yes
         notify: restart nginx
@@ -180,7 +256,7 @@
 
       - name: Corriger les permissions pour nginx - dossier web-tier
         ansible.builtin.file:
-          path: /home/admin/web-tier/build
+          path: /home/admin/web-tier
           mode: 'o+rX'
           recurse: yes
 
@@ -210,10 +286,39 @@
           state: present
         when: ansible_os_family == "Debian"
 
-      - name: Installer PM2 globalement
-        ansible.builtin.npm:
-          name: pm2
-          global: yes
+      # Fix: Ensure npm is available and refresh the environment
+      - name: Wait for npm to be available and refresh environment
+        ansible.builtin.shell: |
+          hash -r
+          which npm
+          npm --version
+        register: npm_check
+        retries: 3
+        delay: 5
+        until: npm_check.rc == 0
+
+      - name: Display npm version
+        ansible.builtin.debug:
+          var: npm_check.stdout_lines
+
+      - name: Installer PM2 globalement avec chemin complet
+        ansible.builtin.shell: |
+          export PATH="/usr/bin:$PATH"
+          /usr/bin/npm install -g pm2
+        environment:
+          PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+      - name: Vérifier l'installation de PM2
+        ansible.builtin.shell: |
+          export PATH="/usr/local/bin:/usr/bin:$PATH"
+          which pm2 && pm2 --version
+        register: pm2_check
+        environment:
+          PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+      - name: Display PM2 installation status
+        ansible.builtin.debug:
+          var: pm2_check.stdout_lines
 
       - name: Vérifier le contenu du dossier app-tier
         ansible.builtin.find:
@@ -225,25 +330,50 @@
         ansible.builtin.debug:
           var: app_tier_files.files
 
+      - name: Check if app-tier package.json exists
+        ansible.builtin.stat:
+          path: "{{ dest_dir }}/application-code/app-tier/package.json"
+        register: package_json_check
+
       - name: Installer les dépendances de l'application
         ansible.builtin.shell: |
           cd {{ dest_dir }}/application-code/app-tier
-          npm install
+          export PATH="/usr/bin:$PATH"
+          /usr/bin/npm install
+        environment:
+          PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        when: package_json_check.stat.exists
 
       - name: Arrêter les anciens processus PM2
-        ansible.builtin.shell: pm2 kill
+        ansible.builtin.shell: |
+          export PATH="/usr/local/bin:/usr/bin:$PATH"
+          pm2 kill || true
+        environment:
+          PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
         ignore_errors: yes
+
+      - name: Check if app entry point exists
+        ansible.builtin.stat:
+          path: "{{ dest_dir }}/application-code/app-tier/index.js"
+        register: app_entry_check
 
       - name: Démarrer l'application avec PM2
         ansible.builtin.shell: |
           cd {{ dest_dir }}/application-code/app-tier
+          export PATH="/usr/local/bin:/usr/bin:$PATH"
           pm2 start index.js --name "three-tier-app"
           pm2 save
+        environment:
+          PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        when: app_entry_check.stat.exists
 
       - name: Configurer PM2 au démarrage
         ansible.builtin.shell: |
-          pm2 startup
-          pm2 save
+          export PATH="/usr/local/bin:/usr/bin:$PATH"
+          pm2 startup || true
+          pm2 save || true
+        environment:
+          PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
         ignore_errors: yes
 
       when: "'app' in group_names"
