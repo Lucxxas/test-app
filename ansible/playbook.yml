@@ -8,22 +8,20 @@
     spacelift_api_endpoint: "{{ ansible_env.SPACELIFT_API_ENDPOINT | default('https://your-org.app.spacelift.io') }}"
     spacelift_token: "{{ ansible_env.SPACELIFT_TOKEN | default('') }}"
   tasks:
-    - name: Read Terraform outputs from file
-      slurp:
-        src: /tmp/terraform_outputs.json
-      register: terraform_outputs_file
-      check_mode: no
-
-    - name: Parse Terraform outputs
+    - name: Get outputs from Spacelift environment variables
       set_fact:
-        terraform_outputs: "{{ terraform_outputs_file.content | b64decode | from_json }}"
+        web_ip: "{{ ansible_env.TF_VAR_web_instance_ip }}"
+        app_ip: "{{ ansible_env.TF_VAR_app_instance_ip }}"
+        db_endpoint: "{{ ansible_env.TF_VAR_database_endpoint }}"
+        ssh_private_key: "{{ ansible_env.TF_VAR_ssh_private_key }}"
 
-    - name: Extract IPs and endpoints
-      set_fact:
-        web_ip: "{{ terraform_outputs.web_instance_ip.value }}"
-        app_ip: "{{ terraform_outputs.app_instance_ip.value }}"
-        db_endpoint: "{{ terraform_outputs.database_endpoint.value }}"
-        ssh_private_key: "{{ terraform_outputs.ssh_private_key.value }}"
+    - name: Debug - Show retrieved values
+      debug:
+        msg: 
+          - "WEB_IP: {{ web_ip }}"
+          - "APP_IP: {{ app_ip }}"
+          - "DB_ENDPOINT: {{ db_endpoint }}"
+          - "SSH_KEY: {{ 'PRESENT' if ssh_private_key else 'MISSING' }}"
 
     - name: Create SSH key file
       copy:
