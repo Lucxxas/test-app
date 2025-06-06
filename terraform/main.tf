@@ -1,3 +1,8 @@
+# Configuration locale pour test
+locals {
+  aws_region = "us-east-1"
+}
+
 # Generate SSH key pair
 resource "tls_private_key" "TP-FINAL_key" {
   algorithm = "RSA"
@@ -161,29 +166,10 @@ resource "aws_security_group" "TP-FINAL_sg" {
   }
 }
 
-# EC2 Instance APP
-resource "aws_instance" "TP-FINAL-APP" {
+# Instance principale (pour héberger web + app + db)
+resource "aws_instance" "TP-FINAL-MAIN" {
   ami                    = "ami-0c02fb55956c7d316"  # Amazon Linux 2023
-  instance_type          = "t2.micro"
-  subnet_id              = aws_subnet.TP-FINAL-APP_subnet.id
-  key_name               = aws_key_pair.TP-FINAL_keypair.key_name
-  vpc_security_group_ids = [aws_security_group.TP-FINAL_sg.id]
-
-  user_data = <<-EOF
-    #!/bin/bash
-    yum update -y
-    yum install -y python3 python3-pip
-  EOF
-
-  tags = {
-    Name = "TP-FINAL-APP-instance"
-  }
-}
-
-# EC2 Instance WEB (instance principale pour Ansible)
-resource "aws_instance" "TP-FINAL-WEB" {
-  ami                    = "ami-0c02fb55956c7d316"  # Amazon Linux 2023
-  instance_type          = "t2.medium"  # Plus de ressources pour héberger tous les services
+  instance_type          = "t2.medium"  # Plus de ressources
   subnet_id              = aws_subnet.TP-FINAL-WEB_subnet.id
   key_name               = aws_key_pair.TP-FINAL_keypair.key_name
   vpc_security_group_ids = [aws_security_group.TP-FINAL_sg.id]
@@ -201,25 +187,17 @@ resource "aws_instance" "TP-FINAL-WEB" {
   EOF
 
   tags = {
-    Name = "TP-FINAL-WEB-instance"
+    Name = "TP-FINAL-MAIN-instance"
   }
 }
 
-# EC2 Instance BDD
-resource "aws_instance" "TP-FINAL-BDD" {
-  ami                    = "ami-0c02fb55956c7d316"  # Amazon Linux 2023
-  instance_type          = "t2.micro"
-  subnet_id              = aws_subnet.TP-FINAL-BDD_subnet.id
-  key_name               = aws_key_pair.TP-FINAL_keypair.key_name
-  vpc_security_group_ids = [aws_security_group.TP-FINAL_sg.id]
+# Outputs pour Ansible
+output "instance_ips" {
+  description = "Public IP of the main instance"
+  value       = aws_instance.TP-FINAL-MAIN.public_ip
+}
 
-  user_data = <<-EOF
-    #!/bin/bash
-    yum update -y
-    yum install -y python3 python3-pip
-  EOF
-
-  tags = {
-    Name = "TP-FINAL-BDD-instance"
-  }
+output "private_key_ssm_name" {
+  description = "SSM Parameter name for SSH private key"
+  value       = aws_ssm_parameter.private_key.name
 }
