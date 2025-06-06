@@ -335,33 +335,15 @@ output "private_key_ssm_name" {
   value       = aws_ssm_parameter.private_key.name
 }
 
-# Stocker les IPs dans des fichiers pour Ansible
-resource "local_file" "ansible_ips" {
-  content = jsonencode({
-    web_ip = aws_instance.TP-FINAL-WEB.public_ip
-    app_ip = aws_instance.TP-FINAL-APP.public_ip
-    db_endpoint = aws_db_instance.TP-FINAL-DB.endpoint
-  })
-  filename = "../ansible/terraform_ips.json"
-  
-  depends_on = [
-    aws_instance.TP-FINAL-WEB,
-    aws_instance.TP-FINAL-APP,
-    aws_db_instance.TP-FINAL-DB
-  ]
-}
-
-# Null resource pour déclencher Ansible après création
-resource "null_resource" "run_ansible" {
-  triggers = {
-    web_ip = aws_instance.TP-FINAL-WEB.public_ip
-    app_ip = aws_instance.TP-FINAL-APP.public_ip
-    db_endpoint = aws_db_instance.TP-FINAL-DB.endpoint
-  }
-
   provisioner "local-exec" {
     command = "echo 'IPs ready: WEB=${aws_instance.TP-FINAL-WEB.public_ip}, APP=${aws_instance.TP-FINAL-APP.public_ip}' && chmod +x ../scripts/deploy-ansible.sh && ../scripts/deploy-ansible.sh"
   }
 
   depends_on = [local_file.ansible_ips, local_file.private_key]
+}
+
+output "ssh_private_key" {
+  description = "SSH private key for EC2 instances"
+  value       = tls_private_key.TP-FINAL_key.private_key_pem
+  sensitive   = true
 }
