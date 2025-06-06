@@ -127,7 +127,6 @@
         ansible.builtin.shell: |
           curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
           yum install -y nodejs
-        when: ansible_os_family == "RedHat"
 
       - name: Installer Node.js et npm (Ubuntu/Debian)
         ansible.builtin.package:
@@ -135,12 +134,10 @@
             - nodejs
             - npm
           state: present
-        when: ansible_os_family == "Debian"
 
       # Fix: Ensure environment is refreshed after Node.js installation
       - name: Refresh environment after Node.js installation
         ansible.builtin.shell: hash -r
-        when: ansible_os_family == "Debian"
 
       - name: Créer le dossier build pour React
         ansible.builtin.file:
@@ -160,13 +157,11 @@
         ansible.builtin.shell: |
           cd {{ web_tier_path }}
           npm install
-        when: web_tier_check.stat.exists
 
       - name: Construire l'application React
         ansible.builtin.shell: |
           cd {{ web_tier_path }}
           npm run build
-        when: web_tier_check.stat.exists
 
       - name: Check if build directory was created
         ansible.builtin.stat:
@@ -181,7 +176,6 @@
           owner: admin
           group: admin
           mode: '0755'
-        when: build_check.stat.exists
 
       - name: Create basic index.html if build failed
         ansible.builtin.copy:
@@ -200,7 +194,6 @@
           owner: admin
           group: admin
           mode: '0644'
-        when: not build_check.stat.exists
 
       - name: Configurer Nginx avec une configuration basique
         ansible.builtin.copy:
@@ -276,7 +269,6 @@
         ansible.builtin.shell: |
           curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
           yum install -y nodejs
-        when: ansible_os_family == "RedHat"
 
       - name: Installer Node.js et npm (Ubuntu/Debian)
         ansible.builtin.package:
@@ -284,7 +276,6 @@
             - nodejs
             - npm
           state: present
-        when: ansible_os_family == "Debian"
 
       # Fix: Ensure npm is available and refresh the environment
       - name: Wait for npm to be available and refresh environment
@@ -342,7 +333,6 @@
           /usr/bin/npm install
         environment:
           PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        when: package_json_check.stat.exists
 
       - name: Arrêter les anciens processus PM2
         ansible.builtin.shell: |
@@ -365,7 +355,6 @@
           pm2 save
         environment:
           PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        when: app_entry_check.stat.exists
 
       - name: Configurer PM2 au démarrage
         ansible.builtin.shell: |
