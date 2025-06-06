@@ -335,13 +335,6 @@ output "private_key_ssm_name" {
   value       = aws_ssm_parameter.private_key.name
 }
 
-  provisioner "local-exec" {
-    command = "echo 'IPs ready: WEB=${aws_instance.TP-FINAL-WEB.public_ip}, APP=${aws_instance.TP-FINAL-APP.public_ip}' && chmod +x ../scripts/deploy-ansible.sh && ../scripts/deploy-ansible.sh"
-  }
-
-  depends_on = [local_file.ansible_ips, local_file.private_key]
-}
-
 output "ssh_private_key" {
   description = "SSH private key for EC2 instances"
   value       = tls_private_key.TP-FINAL_key.private_key_pem
