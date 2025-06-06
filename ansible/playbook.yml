@@ -1,6 +1,78 @@
 ---
+# Play 1: Récupération des outputs Terraform et création de l'inventaire dynamique
+- name: Setup from Terraform outputs
+  hosts: localhost
+  gather_facts: no
+  vars:
+    terraform_stack_id: "test"
+  tasks:
+    - name: Get Terraform outputs via spacectl
+      shell: spacectl stack output --id={{ terraform_stack_id }} --format=json
+      register: terraform_outputs_raw
+
+    - name: Parse Terraform outputs
+      set_fact:
+        terraform_outputs: "{{ terraform_outputs_raw.stdout | from_json }}"
+
+    - name: Extract IPs and endpoints
+      set_fact:
+        web_ip: "{{ terraform_outputs.web_instance_ip.value }}"
+        app_ip: "{{ terraform_outputs.app_instance_ip.value }}"
+        db_endpoint: "{{ terraform_outputs.database_endpoint.value }}"
+        ssh_private_key: "{{ terraform_outputs.ssh_private_key.value }}"
+
+    - name: Create SSH key file
+      copy:
+        content: "{{ ssh_private_key }}"
+        dest: /tmp/ssh_key.pem
+        mode: '0600'
+
+    - name: Create dynamic inventory
+      copy:
+        content: |
+          [web]
+          {{ web_ip }}
+          
+          [app]
+          {{ app_ip }}
+          
+          [db]
+          {{ db_endpoint }}
+          
+          [all:vars]
+          ansible_user=ec2-user
+          ansible_ssh_private_key_file=/tmp/ssh_key.pem
+          database_endpoint={{ db_endpoint }}
+          database_name=webappdb
+          database_user=admin
+          database_password=Password123!
+        dest: ./dynamic_inventory.yml
+
+    - name: Wait for instances to be SSH ready
+      wait_for:
+        host: "{{ item }}"
+        port: 22
+        delay: 10
+        timeout: 300
+      loop:
+        - "{{ web_ip }}"
+        - "{{ app_ip }}"
+
+    - name: Add hosts to in-memory inventory
+      add_host:
+        name: "{{ item.name }}"
+        ansible_host: "{{ item.ip }}"
+        groups: "{{ item.group }}"
+        ansible_user: ec2-user
+        ansible_ssh_private_key_file: /tmp/ssh_key.pem
+        ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+      loop:
+        - { name: "web_server", ip: "{{ web_ip }}", group: "web" }
+        - { name: "app_server", ip: "{{ app_ip }}", group: "app" }
+
+# Play 2: Configuration 3-Tier AWS (Web + App tiers)
 - name: Configuration 3-Tier AWS (Web + App tiers)
-  hosts: all
+  hosts: web,app
   become: yes
   become_method: sudo
   vars:
@@ -10,6 +82,10 @@
     web_tier_path: "{{ dest_dir }}/application-code/web-tier"
     app_tier_path: "{{ dest_dir }}/application-code/app-tier"
     app_server_ip: "{{ hostvars[groups['app'][0]]['ansible_host'] | default('localhost') }}"
+    database_endpoint: "{{ hostvars['localhost']['db_endpoint'] }}"
+    database_name: "webappdb"
+    database_user: "admin"
+    database_password: "Password123!"
 
   tasks:
     # ======================
@@ -117,14 +193,30 @@
           mode: '0755'
         when: web_tier_dir.stat.exists
 
-      - name: Configurer Nginx avec le template
-        ansible.builtin.template:
-          src: templates/nginx.conf.j2
+      - name: Create nginx configuration template
+        copy:
+          content: |
+            events { worker_connections 1024; }
+            http {
+                include /etc/nginx/mime.types;
+                default_type application/octet-stream;
+                server {
+                    listen 80;
+                    location / {
+                        root /home/admin/web-tier/build;
+                        try_files $uri $uri/ /index.html;
+                    }
+                    location /api/ {
+                        proxy_pass http://{{ app_server_ip }}:4000/;
+                        proxy_set_header Host $host;
+                        proxy_set_header X-Real-IP $remote_addr;
+                        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    }
+                }
+            }
           dest: /etc/nginx/nginx.conf
           backup: yes
         notify: restart nginx
-        vars:
-          app_ip: "{{ app_server_ip }}"
 
       - name: Corriger les permissions pour nginx - dossiers parents
         ansible.builtin.file:
@@ -182,18 +274,18 @@
           npm install --production
         when: app_tier_dir.stat.exists
 
-      - name: Configurer les variables d'environnement pour l'app
-        ansible.builtin.template:
-          src: templates/app.env.j2
+      - name: Create app environment file
+        copy:
+          content: |
+            DB_HOST={{ database_endpoint }}
+            DB_NAME={{ database_name }}
+            DB_USER={{ database_user }}
+            DB_PASSWORD={{ database_password }}
+            PORT=4000
           dest: "{{ app_tier_path }}/.env"
           owner: appuser
           group: appuser
           mode: '0644'
-        vars:
-          db_host: "{{ database_endpoint }}"
-          db_name: "{{ database_name | default('webappdb') }}"
-          db_user: "{{ database_user | default('admin') }}"
-          db_password: "{{ database_password | default('Password123!') }}"
 
       - name: Arrêter les anciens processus PM2
         ansible.builtin.shell: pm2 kill
