@@ -14,14 +14,24 @@
         app_ip: "{{ ansible_env.TF_VAR_app_instance_ip | default('') }}"
         db_endpoint: "{{ ansible_env.TF_VAR_database_endpoint | default('') }}"
 
-    - name: Debug - Show environment variables
+    - name: Debug - Show all environment variables
       debug:
-        msg: "Available TF_VAR variables: {{ ansible_env | dict2items | selectattr('key', 'match', 'TF_VAR_.*') | list }}"
+        var: ansible_env
+      when: ansible_env is defined
+
+    - name: Debug - Show specific variables
+      debug:
+        msg:
+          - "WEB_IP: {{ web_ip }}"
+          - "APP_IP: {{ app_ip }}"
+          - "DB_ENDPOINT: {{ db_endpoint }}"
+          - "TF_VAR_web_instance_ip exists: {{ 'TF_VAR_web_instance_ip' in ansible_env }}"
+          - "TF_VAR_app_instance_ip exists: {{ 'TF_VAR_app_instance_ip' in ansible_env }}"
 
     - name: Fail if required variables are missing
       fail:
         msg: "Required Terraform outputs not found. Please check Dependencies configuration."
-      when: web_ip == "" or app_ip == "" or db_endpoint == ""
+      when: (web_ip == "" or app_ip == "" or db_endpoint == "") and ansible_env is defined
 
     - name: Get SSH key from SSM Parameter Store
       shell: |
