@@ -41,6 +41,338 @@
         name: "{{ item.name }}"
         ansible_host: "{{ item.ip }}"
         groups: "{{ item.group }}"
+        ansible_user: ubuntu  # Ubuntu utilise 'ubuntu' au lieu de 'ec2-user'
+        ansible_ssh_private_key_file: /tmp/ssh_key.pem
+        ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+      loop:
+        - { name: "web_server", ip: "{{ web_ip }}", group: "web" }
+        - { name: "app_server", ip: "{{ app_ip }}", group: "app" }
+
+# Play 2: Configuration 3-Tier AWS avec Ubuntu
+- name: Configuration 3-Tier AWS (Web + App tiers)
+  hosts: web,app
+  become: yes
+  become_method: sudo
+  vars:
+    repo_url: https://github.com/aws-samples/aws-three-tier-web-architecture-workshop.git
+    dest_dir: /opt/aws-three-tier
+    app_port: 4000
+    web_tier_path: "{{ dest_dir }}/application-code/web-tier"
+    app_tier_path: "{{ dest_dir }}/application-code/app-tier"
+    app_server_ip: "{{ hostvars['app_server']['ansible_host'] }}"
+    database_endpoint: "{{ hostvars['localhost']['db_endpoint'] }}"
+    database_name: "webappdb"
+    database_user: "admin"
+    database_password: "Password123!"
+
+  tasks:
+    # ======================
+    # CONFIGURATION COMMUNE
+    # ======================
+    - name: Attendre que les instances soient prêtes
+      wait_for_connection:
+        delay: 10
+        timeout: 300
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Installer les paquets de base
+      ansible.builtin.package:
+        name:
+          - git
+          - curl
+          - unzip
+          - htop
+          - python3
+          - python3-pip
+          - build-essential
+        state: present
+
+    - name: Créer l'utilisateur pour l'application
+      ansible.builtin.user:
+        name: appuser
+        shell: /bin/bash
+        home: /home/appuser
+        create_home: yes
+        state: present
+
+    - name: Créer l'utilisateur admin
+      ansible.builtin.user:
+        name: admin
+        shell: /bin/bash
+        home: /home/admin
+        create_home: yes
+        state: present
+
+    - name: Ensure user directories exist with correct ownership
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
+        mode: '0755'
+      loop:
+        - { path: "/home/appuser", owner: "appuser", group: "appuser" }
+        - { path: "/home/admin", owner: "admin", group: "admin" }
+
+    - name: Cloner le repository AWS 3-tier
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "{{ dest_dir }}"
+        version: main
+        force: yes
+
+    - name: Vérifier la structure du repository
+      ansible.builtin.find:
+        paths: "{{ dest_dir }}"
+        file_type: directory
+        recurse: no
+      register: repo_structure
+
+    - name: Afficher la structure du repository
+      ansible.builtin.debug:
+        var: repo_structure.files
+
+    - name: Ajuster les permissions du dossier
+      ansible.builtin.file:
+        path: "{{ dest_dir }}"
+        owner: appuser
+        group: appuser
+        recurse: yes
+
+    # =================
+    # TIER WEB (NGINX)
+    # =================
+    - block:
+      - name: Install Nginx on Ubuntu
+        ansible.builtin.package:
+          name: nginx
+          state: present
+
+      - name: Install Node.js and npm on Ubuntu
+        ansible.builtin.package:
+          name:
+            - nodejs
+            - npm
+          state: present
+
+      - name: Verify Node.js installation
+        ansible.builtin.shell: |
+          node --version
+          npm --version
+        register: node_version
+        ignore_errors: yes
+        changed_when: false
+
+      - name: Debug Node.js version
+        debug:
+          var: node_version.stdout_lines
+        when: node_version is defined
+
+      - name: Créer le dossier build pour React
+        ansible.builtin.file:
+          path: /home/admin/web-tier
+          state: directory
+          owner: admin
+          group: admin
+          mode: '0755'
+
+      - name: Vérifier l'existence du dossier web-tier
+        ansible.builtin.stat:
+          path: "{{ web_tier_path }}"
+        register: web_tier_dir
+
+      - name: Afficher le chemin du web-tier
+        ansible.builtin.debug:
+          msg: "Web tier path: {{ web_tier_path }}, exists: {{ web_tier_dir.stat.exists }}"
+
+      - name: Installer les dépendances React
+        ansible.builtin.shell: |
+          cd {{ web_tier_path }}
+          npm install
+        when: web_tier_dir.stat.exists
+        become_user: admin
+
+      - name: Construire l'application React
+        ansible.builtin.shell: |
+          cd {{ web_tier_path }}
+          npm run build
+        when: web_tier_dir.stat.exists
+        become_user: admin
+
+      - name: Copier les fichiers build vers le dossier web
+        ansible.builtin.copy:
+          src: "{{ web_tier_path }}/build/"
+          dest: /home/admin/web-tier/build/
+          remote_src: yes
+          owner: admin
+          group: admin
+          mode: '0755'
+        when: web_tier_dir.stat.exists
+
+      - name: Configurer Nginx avec le template
+        ansible.builtin.template:
+          src: nginx.conf.j2
+          dest: /etc/nginx/nginx.conf
+          backup: yes
+        notify: restart nginx
+
+      - name: Corriger les permissions pour nginx - dossiers parents
+        ansible.builtin.file:
+          path: "{{ item }}"
+          mode: 'o+x'
+        loop:
+          - /home
+          - /home/admin
+
+      - name: Corriger les permissions pour nginx - dossier web-tier
+        ansible.builtin.file:
+          path: /home/admin/web-tier/build
+          mode: 'o+rX'
+          recurse: yes
+        when: web_tier_dir.stat.exists
+
+      - name: Démarrer et activer Nginx
+        ansible.builtin.service:
+          name: nginx
+          state: started
+          enabled: yes
+
+      when: "'web' in group_names"
+
+    # ========================
+    # TIER APPLICATION (NODE)
+    # ========================
+    - block:
+      - name: Install Node.js and npm on Ubuntu (app tier)
+        ansible.builtin.package:
+          name:
+            - nodejs
+            - npm
+          state: present
+
+      - name: Verify Node.js and npm installation
+        ansible.builtin.shell: |
+          node --version
+          npm --version
+        register: node_version_app
+        ignore_errors: yes
+        changed_when: false
+
+      - name: Debug Node.js version on app server
+        debug:
+          var: node_version_app.stdout_lines
+        when: node_version_app is defined
+
+      - name: Install PM2 globalement
+        ansible.builtin.npm:
+          name: pm2
+          global: yes
+        ignore_errors: yes
+
+      - name: Vérifier le contenu du dossier app-tier
+        ansible.builtin.find:
+          paths: "{{ app_tier_path }}"
+          patterns: "*"
+        register: app_tier_files
+
+      - name: Afficher les fichiers trouvés dans app-tier
+        ansible.builtin.debug:
+          var: app_tier_files.files
+
+      - name: Installer les dépendances de l'application
+        ansible.builtin.shell: |
+          cd {{ app_tier_path }}
+          npm install
+        when: app_tier_files.matched > 0
+        become_user: appuser
+
+      - name: Create app environment file
+        ansible.builtin.copy:
+          content: |
+            DB_HOST={{ database_endpoint.split(':')[0] }}
+            DB_NAME={{ database_name }}
+            DB_USER={{ database_user }}
+            DB_PASSWORD={{ database_password }}
+            PORT={{ app_port }}
+          dest: "{{ app_tier_path }}/.env"
+          owner: appuser
+          group: appuser
+          mode: '0644'
+        when: app_tier_files.matched > 0
+
+      - name: Arrêter les anciens processus PM2
+        ansible.builtin.shell: pm2 kill
+        ignore_errors: yes
+        become_user: appuser
+
+      - name: Démarrer l'application avec PM2
+        ansible.builtin.shell: |
+          cd {{ app_tier_path }}
+          pm2 start index.js --name "three-tier-app"
+          pm2 save
+        become_user: appuser
+        when: app_tier_files.matched > 0
+
+      - name: Configurer PM2 au démarrage
+        ansible.builtin.shell: |
+          pm2 startup
+          pm2 save
+        ignore_errors: yes
+        become_user: appuser
+
+      when: "'app' in group_names"
+
+  handlers:
+    - name: restart nginx
+      ansible.builtin.service:
+        name: nginx
+        state: restarted---
+# Play 1: Setup depuis les variables d'environnement Spacelift
+- name: Setup from environment variables
+  hosts: localhost
+  gather_facts: yes
+  connection: local
+  tasks:
+    - name: Read values from files created by hook
+      slurp:
+        src: "{{ item.file }}"
+      register: ip_files
+      loop:
+        - { name: "web_ip", file: "/tmp/web_ip.txt" }
+        - { name: "app_ip", file: "/tmp/app_ip.txt" }
+        - { name: "db_endpoint", file: "/tmp/db_endpoint.txt" }
+
+    - name: Set facts from file content
+      set_fact:
+        web_ip: "{{ (ip_files.results | selectattr('item.name', 'equalto', 'web_ip') | first).content | b64decode | trim }}"
+        app_ip: "{{ (ip_files.results | selectattr('item.name', 'equalto', 'app_ip') | first).content | b64decode | trim }}"
+        db_endpoint: "{{ (ip_files.results | selectattr('item.name', 'equalto', 'db_endpoint') | first).content | b64decode | trim }}"
+
+    - name: Debug - Show values from hook
+      debug:
+        msg:
+          - "WEB_IP: {{ web_ip }}"
+          - "APP_IP: {{ app_ip }}"
+          - "DB_ENDPOINT: {{ db_endpoint }}"
+
+    - name: Check if SSH key file exists
+      stat:
+        path: /tmp/ssh_key.pem
+      register: ssh_key_stat
+
+    - name: Debug - SSH key status
+      debug:
+        msg: "SSH key file exists: {{ ssh_key_stat.stat.exists }}"
+
+    - name: Add hosts to inventory
+      add_host:
+        name: "{{ item.name }}"
+        ansible_host: "{{ item.ip }}"
+        groups: "{{ item.group }}"
         ansible_user: ec2-user
         ansible_ssh_private_key_file: /tmp/ssh_key.pem
         ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
