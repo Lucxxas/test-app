@@ -57,11 +57,7 @@ http {
 
         # Proxy API requests to app server
         location /api/ {
-{% if groups['app'] is defined and groups['app']|length > 0 %}
-            proxy_pass http://{{ hostvars[groups['app'][0]]['ansible_default_ipv4']['address'] }}:4000;
-{% else %}
-            proxy_pass http://{{ internal_lb_dns | default('localhost:4000') }};
-{% endif %}
+            proxy_pass http://{{ app_server_ip }}:4000/;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
