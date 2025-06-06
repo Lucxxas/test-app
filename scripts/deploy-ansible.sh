@@ -49,7 +49,7 @@ echo "📋 Database Endpoint: $DB_ENDPOINT"
 
 # Récupérer la clé SSH depuis SSM
 echo "🔑 Getting SSH key from SSM..."
-aws ssm get-parameter --name "/ssh/TP-FINAL-keypair/private" --with-decryption --query 'Parameter.Value' --output text > /tmp/ansible_key
+aws ssm get-parameter --name "/ssh/TP-FINAL-keypair/private" --with-decryption --query "Parameter.Value" --output text --region us-east-1 > ~/.ssh/TP-FINAL-keypair.pem
 chmod 600 /tmp/ansible_key
 
 # Attendre que les instances soient prêtes
