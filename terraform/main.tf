@@ -353,7 +353,7 @@ resource "null_resource" "run_ansible" {
   }
 
   provisioner "local-exec" {
-    command = "echo 'IPs stored for Ansible: WEB=${aws_instance.TP-FINAL-WEB.public_ip}, APP=${aws_instance.TP-FINAL-APP.public_ip}'"
+    command = "echo 'IPs ready: WEB=${aws_instance.TP-FINAL-WEB.public_ip}, APP=${aws_instance.TP-FINAL-APP.public_ip}' && chmod +x ../scripts/deploy-ansible.sh && ../scripts/deploy-ansible.sh"
   }
 
   depends_on = [local_file.ansible_ips]
