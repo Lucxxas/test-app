@@ -3,8 +3,8 @@ set -e
 
 echo "🚀 Deploying 3-tier architecture with Ansible..."
 
-# Récupérer les IPs depuis Terraform
-cd terraform/
+# Récupérer les IPs depuis Terraform (on est déjà dans terraform/)
+# cd terraform/  # Pas besoin !
 
 WEB_IP=$(terraform output -raw web_instance_ip 2>/dev/null || echo "")
 APP_IP=$(terraform output -raw app_instance_ip 2>/dev/null || echo "")
@@ -31,7 +31,10 @@ echo "⏳ Waiting for instances..."
 sleep 180
 
 # Créer l'inventaire Ansible pour 3-tier
-cd ../ansible/
+cd ../ansible/ 2>/dev/null || cd ansible/ || {
+    echo "📁 Creating ansible directory..."
+    mkdir -p ansible && cd ansible
+}
 cat > inventory.yml << EOF
 [web]
 $WEB_IP
