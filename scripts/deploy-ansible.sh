@@ -1,110 +1,129 @@
 #!/bin/bash
+
+# 🚀 Déployement automatique avec Ansible
+# Usage: ./deploy-ansible.sh
+
 set -e
 
 echo "🚀 Deploying 3-tier architecture with Ansible..."
 
-# Lire les IPs depuis le fichier créé par Terraform
-IP_FILE="../ansible/terraform_ips.json"
-
-if [ ! -f "$IP_FILE" ]; then
-    echo "❌ IP file not found: $IP_FILE"
+# Vérifier que le fichier d'IPs existe
+if [ ! -f "../ansible/terraform_ips.json" ]; then
+    echo "❌ IP file not found: ../ansible/terraform_ips.json"
     echo "🔍 Trying to create it manually..."
     
-    # Fallback: essayer de créer le dossier et le fichier
-    mkdir -p ../ansible
+    # Essayer de récupérer les IPs depuis les outputs Terraform
+    WEB_IP=$(terraform output -raw web_instance_ip 2>/dev/null || echo "")
+    APP_IP=$(terraform output -raw app_instance_ip 2>/dev/null || echo "")
+    DB_ENDPOINT=$(terraform output -raw database_endpoint 2>/dev/null || echo "")
     
-    # Utiliser aws cli en fallback
-    WEB_IP=$(aws ec2 describe-instances \
-      --filters "Name=tag:Name,Values=TP-FINAL-WEB-instance" "Name=instance-state-name,Values=running" \
-      --query "Reservations[0].Instances[0].PublicIpAddress" \
-      --output text 2>/dev/null || echo "")
-    
-    APP_IP=$(aws ec2 describe-instances \
-      --filters "Name=tag:Name,Values=TP-FINAL-APP-instance" "Name=instance-state-name,Values=running" \
-      --query "Reservations[0].Instances[0].PublicIpAddress" \
-      --output text 2>/dev/null || echo "")
-    
-    DB_ENDPOINT=$(aws rds describe-db-instances \
-      --db-instance-identifier tp-final-database \
-      --query "DBInstances[0].Endpoint.Address" \
-      --output text 2>/dev/null || echo "")
+    if [ -z "$WEB_IP" ] || [ -z "$APP_IP" ] || [ -z "$DB_ENDPOINT" ]; then
+        echo "❌ Instance IPs not found"
+        echo "WEB_IP: '$WEB_IP'"
+        echo "APP_IP: '$APP_IP'"
+        echo "DB_ENDPOINT: '$DB_ENDPOINT'"
+        exit 1
+    fi
 else
-    echo "📋 Reading IPs from: $IP_FILE"
-    WEB_IP=$(cat "$IP_FILE" | jq -r '.web_ip // empty')
-    APP_IP=$(cat "$IP_FILE" | jq -r '.app_ip // empty')
-    DB_ENDPOINT=$(cat "$IP_FILE" | jq -r '.db_endpoint // empty')
-fi
-
-if [ -z "$WEB_IP" ] || [ -z "$APP_IP" ] || [ "$WEB_IP" = "None" ] || [ "$APP_IP" = "None" ]; then
-    echo "❌ Instance IPs not found"
-    echo "WEB_IP: '$WEB_IP'"
-    echo "APP_IP: '$APP_IP'"
-    echo "DB_ENDPOINT: '$DB_ENDPOINT'"
-    exit 1
+    echo "📋 Reading IPs from: ../ansible/terraform_ips.json"
+    
+    # Lire les IPs depuis le fichier JSON
+    WEB_IP=$(cat ../ansible/terraform_ips.json | jq -r '.web_ip')
+    APP_IP=$(cat ../ansible/terraform_ips.json | jq -r '.app_ip')
+    DB_ENDPOINT=$(cat ../ansible/terraform_ips.json | jq -r '.db_endpoint')
 fi
 
 echo "📋 WEB Instance IP: $WEB_IP"
 echo "📋 APP Instance IP: $APP_IP"
 echo "📋 Database Endpoint: $DB_ENDPOINT"
 
-# Récupérer la clé SSH depuis SSM
-echo "🔑 Getting SSH key from SSM..."
-mkdir -p ~/.ssh
-aws ssm get-parameter --name "/ssh/TP-FINAL-keypair/private" --with-decryption --query "Parameter.Value" --output text --region us-east-1 > ~/.ssh/TP-FINAL-keypair.pem
+echo "🔑 Using SSH key from Terraform..."
+# Vérifier que la clé SSH existe
+if [ ! -f "../ansible/TP-FINAL-keypair.pem" ]; then
+    echo "❌ SSH key not found at ../ansible/TP-FINAL-keypair.pem"
+    echo "🔍 Terraform should have created this file..."
+    exit 1
+fi
 
-# Attendre que les instances soient prêtes
-echo "⏳ Waiting for instances..."
-sleep 120
+chmod 600 ../ansible/TP-FINAL-keypair.pem
 
-# Aller dans le dossier ansible
-cd ../ansible/ 2>/dev/null || cd ansible/ || {
-    echo "📁 Creating ansible directory..."
-    mkdir -p ansible && cd ansible
-}
-
-# Créer l'inventaire Ansible
-cat > inventory.yml << EOF
+echo "📝 Creating Ansible inventory..."
+cat > ../ansible/inventory.ini << EOF
 [web]
-$WEB_IP
+$WEB_IP ansible_user=ubuntu ansible_ssh_private_key_file=./TP-FINAL-keypair.pem ansible_ssh_common_args='-o StrictHostKeyChecking=no'
 
 [app]
-$APP_IP
-
-[db]
-$DB_ENDPOINT
-
-[all:vars]
-ansible_user=ubuntu
-ansible_ssh_private_key_file=/tmp/ansible_key
-ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+$APP_IP ansible_user=ubuntu ansible_ssh_private_key_file=./TP-FINAL-keypair.pem ansible_ssh_common_args='-o StrictHostKeyChecking=no'
 
 [db:vars]
-ansible_connection=local
-database_host=$DB_ENDPOINT
-database_name=webappdb
-database_user=admin
-database_password=Password123!
+db_endpoint=$DB_ENDPOINT
 EOF
 
-echo "📋 Generated inventory:"
-cat inventory.yml
+echo "✅ Inventory created successfully!"
 
-# Test de connectivité simplifié
+# Attendre que les instances soient prêtes
+echo "⏳ Waiting for instances to be ready..."
+sleep 30
+
+# Tester la connectivité
 echo "🔍 Testing SSH connectivity..."
-if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i /tmp/ansible_key ubuntu@$WEB_IP "echo 'WEB OK'" 2>/dev/null; then
-    echo "✅ WEB instance accessible"
+cd ../ansible
+
+# Test de connexion avec timeout
+for i in {1..5}; do
+    echo "   Attempt $i/5..."
+    if ansible all -i inventory.ini -m ping --timeout=10; then
+        echo "✅ SSH connectivity successful!"
+        break
+    else
+        echo "⚠️  SSH not ready yet, waiting 30s..."
+        sleep 30
+    fi
+    
+    if [ $i -eq 5 ]; then
+        echo "❌ SSH connectivity failed after 5 attempts"
+        echo "🔍 Debug info:"
+        ansible all -i inventory.ini -m ping -vvv || true
+        exit 1
+    fi
+done
+
+# Lancer les playbooks Ansible
+echo "🎯 Running Ansible playbooks..."
+
+# Playbook pour le serveur Web
+if [ -f "web-playbook.yml" ]; then
+    echo "📦 Configuring Web server..."
+    ansible-playbook -i inventory.ini web-playbook.yml --timeout=300
 else
-    echo "⚠️ WEB instance not ready yet"
+    echo "⚠️  web-playbook.yml not found, skipping..."
 fi
 
-if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i /tmp/ansible_key ubuntu@$APP_IP "echo 'APP OK'" 2>/dev/null; then
-    echo "✅ APP instance accessible"
+# Playbook pour le serveur App
+if [ -f "app-playbook.yml" ]; then
+    echo "📦 Configuring App server..."
+    ansible-playbook -i inventory.ini app-playbook.yml --timeout=300
 else
-    echo "⚠️ APP instance not ready yet"
+    echo "⚠️  app-playbook.yml not found, skipping..."
 fi
 
-# Lancer le playbook Ansible
-echo "🎭 Running Ansible playbook..."
-ansible-playbook playbook.yml -v
+# Playbook pour la base de données (configuration si nécessaire)
+if [ -f "db-playbook.yml" ]; then
+    echo "📦 Configuring Database connections..."
+    ansible-playbook -i inventory.ini db-playbook.yml --timeout=300
+else
+    echo "⚠️  db-playbook.yml not found, skipping..."
+fi
 
-echo "✅ 3-tier deployment completed!"
+echo ""
+echo "🎉 Deployment completed successfully!"
+echo ""
+echo "📋 Access Information:"
+echo "   🌐 Web Server: http://$WEB_IP"
+echo "   ⚙️  App Server: http://$APP_IP:4000"
+echo "   🗄️  Database: $DB_ENDPOINT"
+echo ""
+echo "🔑 SSH Access:"
+echo "   ssh -i ./TP-FINAL-keypair.pem ubuntu@$WEB_IP"
+echo "   ssh -i ./TP-FINAL-keypair.pem ubuntu@$APP_IP"
+echo ""
