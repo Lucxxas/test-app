@@ -101,16 +101,16 @@
         create_home: yes
         state: present
 
-      - name: Ensure user directories exist with correct ownership
-        ansible.builtin.file:
-          path: "{{ item.path }}"
-          state: directory
-          owner: "{{ item.owner }}"
-          group: "{{ item.group }}"
-          mode: '0755'
-        loop:
-          - { path: "/home/appuser", owner: "appuser", group: "appuser" }
-          - { path: "/home/admin", owner: "admin", group: "admin" }
+    - name: Ensure user directories exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ item.split('/')[-1] }}"
+        group: "{{ item.split('/')[-1] }}"
+        mode: '0755'
+      loop:
+        - /home/appuser
+        - /home/admin
 
     - name: Cloner le repository AWS 3-tier
       ansible.builtin.git:
@@ -145,13 +145,11 @@
       - name: Try EPEL repository installation (Amazon Linux)
         ansible.builtin.shell: |
           amazon-linux-extras install epel -y
-        when: ansible_os_family == "RedHat" and ansible_distribution == "Amazon"
         ignore_errors: yes
 
       - name: Try nginx installation via amazon-linux-extras
         ansible.builtin.shell: |
           amazon-linux-extras install nginx1 -y
-        when: ansible_os_family == "RedHat" and ansible_distribution == "Amazon"
         ignore_errors: yes
 
       - name: Try nginx installation via package manager
@@ -164,7 +162,6 @@
         ansible.builtin.command: which nginx
         register: nginx_check
         ignore_errors: yes
-        changed_when: false
 
       # Fallback: install nginx from source for Amazon Linux
       - name: Install nginx from source (Amazon Linux fallback)
@@ -299,17 +296,12 @@
             ansible.builtin.systemd:
               daemon_reload: yes
 
-        when: 
-          - nginx_check is defined
-          - nginx_check.rc is defined
-          - nginx_check.rc != 0
 
       # Install Node.js BEFORE trying to use npm
       - name: Install Node.js and npm pour build React (Amazon Linux)
         ansible.builtin.shell: |
           curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
           yum install -y nodejs
-        when: ansible_os_family == "RedHat"
 
       - name: Install Node.js and npm (Ubuntu/Debian)
         ansible.builtin.package:
@@ -317,7 +309,6 @@
             - nodejs
             - npm
           state: present
-        when: ansible_os_family == "Debian"
 
       - name: Verify Node.js installation
         ansible.builtin.shell: |
@@ -325,12 +316,10 @@
           npm --version
         register: node_version
         ignore_errors: yes
-        changed_when: false
 
       - name: Debug Node.js version
         debug:
           var: node_version.stdout_lines
-        when: node_version is defined
 
       - name: Créer le dossier build pour React
         ansible.builtin.file:
@@ -353,14 +342,12 @@
         ansible.builtin.shell: |
           cd {{ web_tier_path }}
           npm install
-        when: web_tier_dir.stat.exists
         become_user: admin
 
       - name: Construire l'application React
         ansible.builtin.shell: |
           cd {{ web_tier_path }}
           npm run build
-        when: web_tier_dir.stat.exists
         become_user: admin
 
       - name: Copier les fichiers build vers le dossier web
@@ -371,7 +358,6 @@
           owner: admin
           group: admin
           mode: '0755'
-        when: web_tier_dir.stat.exists
 
       - name: Configurer Nginx avec le template
         ansible.builtin.template:
@@ -393,7 +379,6 @@
           path: /home/admin/web-tier/build
           mode: 'o+rX'
           recurse: yes
-        when: web_tier_dir.stat.exists
 
       - name: Démarrer et activer Nginx
         ansible.builtin.service:
@@ -401,7 +386,6 @@
           state: started
           enabled: yes
 
-      when: "'web' in group_names"
 
     # ========================
     # TIER APPLICATION (NODE)
@@ -411,7 +395,6 @@
         ansible.builtin.shell: |
           curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
           yum install -y nodejs
-        when: ansible_os_family == "RedHat"
 
       - name: Install Node.js and npm (Ubuntu/Debian)
         ansible.builtin.package:
@@ -419,7 +402,6 @@
             - nodejs
             - npm
           state: present
-        when: ansible_os_family == "Debian"
 
       - name: Verify Node.js and npm installation
         ansible.builtin.shell: |
@@ -427,18 +409,15 @@
           npm --version
         register: node_version_app
         ignore_errors: yes
-        changed_when: false
 
       - name: Debug Node.js version on app server
         debug:
           var: node_version_app.stdout_lines
-        when: node_version_app is defined
 
       - name: Install PM2 globalement
         ansible.builtin.npm:
           name: pm2
           global: yes
-        ignore_errors: yes
 
       - name: Vérifier le contenu du dossier app-tier
         ansible.builtin.find:
@@ -454,7 +433,6 @@
         ansible.builtin.shell: |
           cd {{ app_tier_path }}
           npm install
-        when: app_tier_files.matched > 0
         become_user: appuser
 
       - name: Create app environment file
@@ -469,7 +447,6 @@
           owner: appuser
           group: appuser
           mode: '0644'
-        when: app_tier_files.matched > 0
 
       - name: Arrêter les anciens processus PM2
         ansible.builtin.shell: pm2 kill
@@ -482,7 +459,6 @@
           pm2 start index.js --name "three-tier-app"
           pm2 save
         become_user: appuser
-        when: app_tier_files.matched > 0
 
       - name: Configurer PM2 au démarrage
         ansible.builtin.shell: |
@@ -490,8 +466,6 @@
           pm2 save
         ignore_errors: yes
         become_user: appuser
-
-      when: "'app' in group_names"
 
   handlers:
     - name: restart nginx
