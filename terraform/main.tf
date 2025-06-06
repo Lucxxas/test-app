@@ -28,6 +28,22 @@ resource "aws_key_pair" "TP-FINAL_keypair" {
   public_key = tls_private_key.TP-FINAL_key.public_key_openssh
 }
 
+# Data source to get the latest Ubuntu 22.04 LTS AMI
+data "aws_ami" "ubuntu" {
+  most_recent = true
+  owners      = ["099720109477"] # Canonical
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+}
+
 # Create VPC
 resource "aws_vpc" "TP-FINAL_vpc" {
   cidr_block           = "192.0.0.0/16"
@@ -232,9 +248,9 @@ resource "aws_db_subnet_group" "TP-FINAL_db_subnet_group" {
   }
 }
 
-# EC2 Instance WEB TIER
+# EC2 Instance WEB TIER - Ubuntu 22.04
 resource "aws_instance" "TP-FINAL-WEB" {
-  ami                    = "ami-0c02fb55956c7d316"
+  ami                    = data.aws_ami.ubuntu.id
   instance_type          = "t2.micro"
   subnet_id              = aws_subnet.TP-FINAL-WEB_subnet.id
   key_name               = aws_key_pair.TP-FINAL_keypair.key_name
@@ -242,13 +258,20 @@ resource "aws_instance" "TP-FINAL-WEB" {
 
   user_data = <<-EOF
     #!/bin/bash
-    yum update -y
-    yum install -y python3 python3-pip git
-    useradd -m -s /bin/bash ubuntu
+    apt-get update -y
+    apt-get install -y python3 python3-pip git curl wget
+    
+    # S'assurer que l'utilisateur ubuntu existe et a les bonnes permissions
+    usermod -aG sudo ubuntu
     echo 'ubuntu ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
+    
+    # Préparer SSH
     mkdir -p /home/ubuntu/.ssh
     chown ubuntu:ubuntu /home/ubuntu/.ssh
     chmod 700 /home/ubuntu/.ssh
+    
+    # Installer quelques outils utiles
+    apt-get install -y htop unzip
   EOF
 
   tags = {
@@ -256,9 +279,9 @@ resource "aws_instance" "TP-FINAL-WEB" {
   }
 }
 
-# EC2 Instance APP TIER
+# EC2 Instance APP TIER - Ubuntu 22.04
 resource "aws_instance" "TP-FINAL-APP" {
-  ami                    = "ami-0c02fb55956c7d316"
+  ami                    = data.aws_ami.ubuntu.id
   instance_type          = "t2.micro"
   subnet_id              = aws_subnet.TP-FINAL-APP_subnet.id
   key_name               = aws_key_pair.TP-FINAL_keypair.key_name
@@ -266,13 +289,20 @@ resource "aws_instance" "TP-FINAL-APP" {
 
   user_data = <<-EOF
     #!/bin/bash
-    yum update -y
-    yum install -y python3 python3-pip git
-    useradd -m -s /bin/bash ubuntu
+    apt-get update -y
+    apt-get install -y python3 python3-pip git curl wget
+    
+    # S'assurer que l'utilisateur ubuntu existe et a les bonnes permissions
+    usermod -aG sudo ubuntu
     echo 'ubuntu ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
+    
+    # Préparer SSH
     mkdir -p /home/ubuntu/.ssh
     chown ubuntu:ubuntu /home/ubuntu/.ssh
     chmod 700 /home/ubuntu/.ssh
+    
+    # Installer quelques outils utiles
+    apt-get install -y htop unzip
   EOF
 
   tags = {
@@ -334,3 +364,12 @@ output "ssh_private_key" {
   sensitive   = true
 }
 
+output "ubuntu_ami_id" {
+  description = "Ubuntu AMI ID used"
+  value       = data.aws_ami.ubuntu.id
+}
+
+output "ubuntu_ami_name" {
+  description = "Ubuntu AMI name"
+  value       = data.aws_ami.ubuntu.name
+}
