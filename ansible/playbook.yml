@@ -101,16 +101,16 @@
         create_home: yes
         state: present
 
-      - name: Ensure user directories exist with correct ownership
-        ansible.builtin.file:
-          path: "{{ item.path }}"
-          state: directory
-          owner: "{{ item.owner }}"
-          group: "{{ item.group }}"
-          mode: '0755'
-        loop:
-          - { path: "/home/appuser", owner: "appuser", group: "appuser" }
-          - { path: "/home/admin", owner: "admin", group: "admin" }
+    - name: Ensure user directories exist with correct ownership
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
+        mode: '0755'
+      loop:
+        - { path: "/home/appuser", owner: "appuser", group: "appuser" }
+        - { path: "/home/admin", owner: "admin", group: "admin" }
 
     - name: Cloner le repository AWS 3-tier
       ansible.builtin.git:
@@ -141,27 +141,43 @@
     # TIER WEB (NGINX)
     # =================
     - block:
-      # Installation spécifique nginx pour Amazon Linux avec plusieurs fallbacks
-      - name: Try EPEL repository installation (Amazon Linux)
+      # Installation nginx optimisée pour Amazon Linux 2
+      - name: Install nginx on Amazon Linux 2 (primary method)
         ansible.builtin.shell: |
-          amazon-linux-extras install epel -y
+          # Update system first
+          yum update -y
+          # Install nginx directly
+          yum install -y nginx
         when: 
           - ansible_os_family == "RedHat" 
           - ansible_distribution == "Amazon"
         ignore_errors: yes
+        register: nginx_al2_install
 
-      - name: Try nginx installation via amazon-linux-extras
+      - name: Install nginx via amazon-linux-extras if direct install fails
         ansible.builtin.shell: |
           amazon-linux-extras install nginx1 -y
         when: 
           - ansible_os_family == "RedHat" 
           - ansible_distribution == "Amazon"
+          - nginx_al2_install is defined
+          - nginx_al2_install.rc != 0
         ignore_errors: yes
 
-      - name: Try nginx installation via package manager
+      - name: Enable EPEL and install nginx (final fallback)
+        ansible.builtin.shell: |
+          amazon-linux-extras install epel -y
+          yum install -y nginx
+        when: 
+          - ansible_os_family == "RedHat" 
+          - ansible_distribution == "Amazon"
+        ignore_errors: yes
+
+      - name: Install nginx on Ubuntu/Debian
         ansible.builtin.package:
           name: nginx
           state: present
+        when: ansible_os_family == "Debian"
         ignore_errors: yes
 
       - name: Check if nginx is installed
@@ -170,12 +186,9 @@
         ignore_errors: yes
         changed_when: false
 
-      # Alternative simple pour Amazon Linux
-      - name: Install nginx using amazon-linux-extras (simple method)
-        ansible.builtin.shell: |
-          # First enable nginx1
-          amazon-linux-extras enable nginx1
-          # Then install with yum
+      - name: Show nginx installation status
+        ansible.builtin.debug:
+          msg: "Nginx installation status: {{ 'SUCCESS' if nginx_check.rc == 0 else 'FAILED' }}" yum
           yum install -y nginx
         when: 
           - ansible_os_family == "RedHat" 
@@ -322,14 +335,27 @@
           - nginx_check.rc is defined
           - nginx_check.rc != 0
 
-      # Install Node.js BEFORE trying to use npm
-      - name: Install Node.js and npm pour build React (Amazon Linux)
+      # Install Node.js optimized for Amazon Linux 2
+      - name: Install Node.js on Amazon Linux 2
         ansible.builtin.shell: |
-          curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
+          # Method 1: Try NodeSource repository
+          curl -fsSL https://rpm.nodesource.com/setup_18.x | bash -
           yum install -y nodejs
         when: ansible_os_family == "RedHat"
+        ignore_errors: yes
+        register: nodejs_install_result
 
-      - name: Install Node.js and npm (Ubuntu/Debian)
+      - name: Alternative Node.js installation for Amazon Linux 2
+        ansible.builtin.shell: |
+          # Method 2: Use amazon-linux-extras
+          amazon-linux-extras install nodejs14 -y
+        when: 
+          - ansible_os_family == "RedHat"
+          - nodejs_install_result is defined
+          - nodejs_install_result.rc != 0
+        ignore_errors: yes
+
+      - name: Install Node.js on Ubuntu/Debian
         ansible.builtin.package:
           name:
             - nodejs
@@ -425,13 +451,26 @@
     # TIER APPLICATION (NODE)
     # ========================
     - block:
-      - name: Install Node.js et npm pour app tier (Amazon Linux)
+      - name: Install Node.js on Amazon Linux 2 (app tier)
         ansible.builtin.shell: |
-          curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
+          # Method 1: Try NodeSource repository
+          curl -fsSL https://rpm.nodesource.com/setup_18.x | bash -
           yum install -y nodejs
         when: ansible_os_family == "RedHat"
+        ignore_errors: yes
+        register: nodejs_app_install_result
 
-      - name: Install Node.js and npm (Ubuntu/Debian)
+      - name: Alternative Node.js installation for Amazon Linux 2 (app tier)
+        ansible.builtin.shell: |
+          # Method 2: Use amazon-linux-extras
+          amazon-linux-extras install nodejs14 -y
+        when: 
+          - ansible_os_family == "RedHat"
+          - nodejs_app_install_result is defined
+          - nodejs_app_install_result.rc != 0
+        ignore_errors: yes
+
+      - name: Install Node.js on Ubuntu/Debian (app tier)
         ansible.builtin.package:
           name:
             - nodejs
