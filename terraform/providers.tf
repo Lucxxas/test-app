@@ -13,13 +13,6 @@ terraform {
 }
 
 provider "aws" {
-  region = var.aws_region
-  # Credentials managed by Spacelift environment variables
-  # AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
-}
-
-variable "aws_region" {
-  description = "AWS region"
-  type        = string
-  default     = "us-east-1"
+  region = "us-east-1"
+  # Credentials via Spacelift environment variables
 }
