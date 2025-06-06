@@ -7,6 +7,38 @@ set -e
 
 echo "🚀 Deploying 3-tier architecture with Ansible..."
 
+# Installer Ansible si pas présent
+if ! command -v ansible &> /dev/null; then
+    echo "📦 Installing Ansible..."
+    
+    # Détecter le système
+    if command -v apt-get &> /dev/null; then
+        # Ubuntu/Debian
+        sudo apt-get update
+        sudo apt-get install -y ansible jq
+    elif command -v yum &> /dev/null; then
+        # CentOS/RHEL/Amazon Linux
+        sudo yum install -y epel-release
+        sudo yum install -y ansible jq
+    elif command -v apk &> /dev/null; then
+        # Alpine Linux
+        sudo apk add --no-cache ansible jq
+    else
+        # Installation via pip en dernier recours
+        echo "📦 Installing via pip..."
+        python3 -m pip install --user ansible jq
+        export PATH="$HOME/.local/bin:$PATH"
+    fi
+    
+    echo "✅ Ansible installed successfully!"
+fi
+
+# Vérifier que jq est disponible
+if ! command -v jq &> /dev/null; then
+    echo "📦 Installing jq..."
+    python3 -m pip install --user jq
+fi
+
 # Vérifier que le fichier d'IPs existe
 if [ ! -f "../ansible/terraform_ips.json" ]; then
     echo "❌ IP file not found: ../ansible/terraform_ips.json"
