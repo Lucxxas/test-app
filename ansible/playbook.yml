@@ -19,18 +19,6 @@
         app_ip: "{{ (ip_files.results | selectattr('item.name', 'equalto', 'app_ip') | first).content | b64decode | trim }}"
         db_endpoint: "{{ (ip_files.results | selectattr('item.name', 'equalto', 'db_endpoint') | first).content | b64decode | trim }}"
 
-    - name: Debug - Show values from hook
-      debug:
-        msg:
-          - "WEB_IP: {{ web_ip }}"
-          - "APP_IP: {{ app_ip }}"
-          - "DB_ENDPOINT: {{ db_endpoint }}"
-
-    - name: Check if SSH key file exists
-      stat:
-        path: /tmp/ssh_key.pem
-      register: ssh_key_stat
-
     - name: Add hosts to inventory
       add_host:
         name: "{{ item.name }}"
@@ -43,635 +31,124 @@
         - { name: "web_server", ip: "{{ web_ip }}", group: "web" }
         - { name: "app_server", ip: "{{ app_ip }}", group: "app" }
 
-- name: Configuration 3-Tier AWS (Web + App tiers)
+- name: Configuration Simple 3-Tier
   hosts: web,app
   become: yes
-  become_method: sudo
   vars:
-    repo_url: https://github.com/aws-samples/aws-three-tier-web-architecture-workshop.git
-    dest_dir: /opt/aws-three-tier
-    app_port: 4000
-    web_tier_path: "{{ dest_dir }}/application-code/web-tier"
-    app_tier_path: "{{ dest_dir }}/application-code/app-tier"
     app_server_ip: "{{ hostvars['app_server']['ansible_host'] }}"
     database_endpoint: "{{ hostvars['localhost']['db_endpoint'] }}"
-    database_name: "webappdb"
-    database_user: "admin"
-    database_password: "Password123!"
 
   tasks:
-    # ======================
-    # CONFIGURATION COMMUNE
-    # ======================
-    - name: Wait for instances to be ready
-      wait_for_connection:
-        delay: 10
-        timeout: 300
-
     - name: Update package cache
-      ansible.builtin.apt:
+      apt:
         update_cache: yes
-        cache_valid_time: 3600
-      when: ansible_os_family == "Debian"
-
-    - name: Update package cache (RedHat)
-      ansible.builtin.yum:
-        update_cache: yes
-      when: ansible_os_family == "RedHat"
 
     - name: Install base packages
-      ansible.builtin.package:
+      package:
         name:
-          - git
           - curl
-          - unzip
+          - git
           - htop
-          - python3
-          - python3-pip
         state: present
-
-    - name: Install build-essential (Ubuntu/Debian)
-      ansible.builtin.package:
-        name: build-essential
-        state: present
-      when: ansible_os_family == "Debian"
-
-    - name: Install development tools (RedHat)
-      ansible.builtin.package:
-        name:
-          - gcc
-          - gcc-c++
-          - make
-        state: present
-      when: ansible_os_family == "RedHat"
-
-    - name: Create application user
-      ansible.builtin.user:
-        name: appuser
-        shell: /bin/bash
-        home: /home/appuser
-        create_home: yes
-        state: present
-
-    - name: Create admin user
-      ansible.builtin.user:
-        name: admin
-        shell: /bin/bash
-        home: /home/admin
-        create_home: yes
-        state: present
-
-    - name: Ensure user directories exist with correct ownership
-      ansible.builtin.file:
-        path: "{{ item.path }}"
-        state: directory
-        owner: "{{ item.owner }}"
-        group: "{{ item.group }}"
-        mode: '0755'
-      loop:
-        - { path: "/home/appuser", owner: "appuser", group: "appuser" }
-        - { path: "/home/admin", owner: "admin", group: "admin" }
-
-    - name: Clone AWS 3-tier repository
-      ansible.builtin.git:
-        repo: "{{ repo_url }}"
-        dest: "{{ dest_dir }}"
-        version: main
-        force: yes
-
-    - name: Verify repository structure
-      ansible.builtin.find:
-        paths: "{{ dest_dir }}"
-        file_type: directory
-        recurse: yes
-      register: repo_structure
-
-    - name: Display repository structure
-      ansible.builtin.debug:
-        msg: "Found directories: {{ repo_structure.files | map(attribute='path') | list }}"
-
-    - name: List all files in repository
-      ansible.builtin.shell: |
-        find {{ dest_dir }} -type f -name "*.js" -o -name "*.json" -o -name "*.html" | head -20
-      register: repo_files
-      ignore_errors: yes
-
-    - name: Display found files
-      ansible.builtin.debug:
-        var: repo_files.stdout_lines
-
-    - name: Check specific paths
-      ansible.builtin.stat:
-        path: "{{ item }}"
-      register: path_check
-      loop:
-        - "{{ dest_dir }}/application-code"
-        - "{{ dest_dir }}/application-code/web-tier"
-        - "{{ dest_dir }}/application-code/app-tier"
-        - "{{ dest_dir }}/web-tier"
-        - "{{ dest_dir }}/app-tier"
-
-    - name: Display path check results
-      ansible.builtin.debug:
-        msg: "Path {{ item.item }} exists: {{ item.stat.exists }}"
-      loop: "{{ path_check.results }}"
-
-    - name: Adjust directory permissions
-      ansible.builtin.file:
-        path: "{{ dest_dir }}"
-        owner: root
-        group: root
-        mode: '0755'
-        recurse: yes
 
     # =================
     # WEB TIER (NGINX)
     # =================
     - block:
-      - name: Install Nginx (Ubuntu/Debian)
-        ansible.builtin.package:
+      - name: Install Nginx
+        package:
           name: nginx
           state: present
-        when: ansible_os_family == "Debian"
 
-      - name: Install Nginx (RedHat/Amazon Linux)
-        ansible.builtin.package:
-          name: nginx
-          state: present
-        when: ansible_os_family == "RedHat"
-        ignore_errors: yes
-
-      - name: Install Nginx via amazon-linux-extras (fallback)
-        ansible.builtin.shell: |
-          amazon-linux-extras install nginx1 -y
-        when: ansible_os_family == "RedHat"
-        ignore_errors: yes
-
-      - name: Install Node.js repository (Ubuntu/Debian)
-        ansible.builtin.shell: |
-          curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
-        when: ansible_os_family == "Debian"
-
-      - name: Install Node.js repository (RedHat)
-        ansible.builtin.shell: |
-          curl -fsSL https://rpm.nodesource.com/setup_18.x | bash -
-        when: ansible_os_family == "RedHat"
-
-      - name: Install Node.js and npm
-        ansible.builtin.package:
-          name:
-            - nodejs
-            - npm
-          state: present
-
-      - name: Install npm explicitly (Ubuntu/Debian)
-        ansible.builtin.package:
-          name: npm
-          state: present
-        when: ansible_os_family == "Debian"
-
-      - name: Install npm explicitly (RedHat)
-        ansible.builtin.package:
-          name: npm
-          state: present
-        when: ansible_os_family == "RedHat"
-
-      - name: Verify Node.js installation
-        ansible.builtin.shell: |
-          node --version
-          npm --version
-        register: node_version
-        changed_when: false
-
-      - name: Debug Node.js version
-        debug:
-          var: node_version.stdout_lines
-
-      - name: Set dynamic web-tier and app-tier paths based on repository structure
-        ansible.builtin.set_fact:
-          actual_web_tier_path: "{{ dest_dir }}/application-code/web-tier"
-          actual_app_tier_path: "{{ dest_dir }}/application-code/app-tier"
-        when: path_check.results[1].stat.exists
-
-      - name: Set alternative paths if application-code doesn't exist
-        ansible.builtin.set_fact:
-          actual_web_tier_path: "{{ dest_dir }}/web-tier"
-          actual_app_tier_path: "{{ dest_dir }}/app-tier"
-        when: not path_check.results[1].stat.exists
-
-      - name: Create fallback web-tier with sample React app if none exists
-        ansible.builtin.file:
-          path: "{{ actual_web_tier_path }}"
-          state: directory
-          mode: '0755'
-        when: not path_check.results[1].stat.exists and not path_check.results[3].stat.exists
-
-      - name: Create sample package.json for web-tier
-        ansible.builtin.copy:
-          content: |
-            {
-              "name": "web-tier",
-              "version": "1.0.0",
-              "private": true,
-              "dependencies": {
-                "react": "^18.2.0",
-                "react-dom": "^18.2.0",
-                "react-scripts": "5.0.1"
-              },
-              "scripts": {
-                "start": "react-scripts start",
-                "build": "react-scripts build",
-                "test": "react-scripts test",
-                "eject": "react-scripts eject"
-              },
-              "browserslist": {
-                "production": [
-                  ">0.2%",
-                  "not dead",
-                  "not op_mini all"
-                ],
-                "development": [
-                  "last 1 chrome version",
-                  "last 1 firefox version",
-                  "last 1 safari version"
-                ]
-              }
-            }
-          dest: "{{ actual_web_tier_path }}/package.json"
-          mode: '0644'
-        when: not path_check.results[1].stat.exists and not path_check.results[3].stat.exists
-
-      - name: Create sample React index.html
-        ansible.builtin.copy:
+      - name: Create simple web page
+        copy:
           content: |
             <!DOCTYPE html>
-            <html lang="en">
+            <html>
             <head>
-                <meta charset="utf-8" />
-                <meta name="viewport" content="width=device-width, initial-scale=1" />
                 <title>AWS 3-Tier Architecture</title>
+                <style>
+                    body { font-family: Arial, sans-serif; margin: 40px; background: #f0f0f0; }
+                    .container { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+                    h1 { color: #FF9900; }
+                    .status { background: #d4edda; padding: 15px; border-radius: 4px; margin: 20px 0; }
+                    button { background: #FF9900; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; }
+                    #result { margin-top: 20px; padding: 10px; background: #f8f9fa; border-radius: 4px; }
+                </style>
             </head>
             <body>
-                <div id="root">
-                    <h1>AWS 3-Tier Architecture Web Tier</h1>
-                    <p>Welcome to the web tier of the 3-tier architecture!</p>
-                    <div id="health-check">
-                        <h2>Health Check</h2>
-                        <p>Web tier is running successfully.</p>
+                <div class="container">
+                    <h1>🚀 AWS 3-Tier Architecture</h1>
+                    <div class="status">
+                        ✅ <strong>Web Tier</strong> - Running successfully!
                     </div>
+                    
+                    <h2>Test API Connection</h2>
+                    <button onclick="testAPI()">Test App Tier Connection</button>
+                    <div id="result"></div>
+                    
+                    <h2>Architecture Components</h2>
+                    <ul>
+                        <li><strong>Web Tier:</strong> Nginx serving this page</li>
+                        <li><strong>App Tier:</strong> Node.js API server</li>
+                        <li><strong>Database Tier:</strong> MySQL RDS</li>
+                    </ul>
                 </div>
-            </body>
-            </html>
-          dest: "{{ actual_web_tier_path }}/public/index.html"
-          mode: '0644'
-        when: not path_check.results[1].stat.exists and not path_check.results[3].stat.exists
-
-      - name: Create public directory for sample app
-        ansible.builtin.file:
-          path: "{{ actual_web_tier_path }}/public"
-          state: directory
-          mode: '0755'
-        when: not path_check.results[1].stat.exists and not path_check.results[3].stat.exists
-
-      - name: Create build directory manually for sample app
-        ansible.builtin.file:
-          path: "{{ actual_web_tier_path }}/build"
-          state: directory
-          mode: '0755'
-        when: not path_check.results[1].stat.exists and not path_check.results[3].stat.exists
-
-      - name: Copy sample index.html to build directory
-        ansible.builtin.copy:
-          src: "{{ actual_web_tier_path }}/public/index.html"
-          dest: "{{ actual_web_tier_path }}/build/index.html"
-          remote_src: yes
-          mode: '0644'
-        when: not path_check.results[1].stat.exists and not path_check.results[3].stat.exists
-
-      - name: Create error pages directory
-        ansible.builtin.file:
-          path: /var/www/html
-          state: directory
-          owner: www-data
-          group: www-data
-          mode: '0755'
-        when: ansible_os_family == "Debian"
-
-      - name: Create error pages directory (RedHat)
-        ansible.builtin.file:
-          path: /var/www/html
-          state: directory
-          owner: nginx
-          group: nginx
-          mode: '0755'
-        when: ansible_os_family == "RedHat"
-
-      - name: Create custom error pages
-        ansible.builtin.copy:
-          content: |
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>Error 50x - Internal Server Error</title>
-                <style>
-                    body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }
-                    h1 { color: #721c24; }
-                </style>
-            </head>
-            <body>
-                <h1>Internal Server Error</h1>
-                <p>Something went wrong on our end. Please try again later.</p>
-            </body>
-            </html>
-          dest: /var/www/html/50x.html
-          mode: '0644'
-
-      - name: Create 404 error page
-        ansible.builtin.copy:
-          content: |
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>Error 404 - Page Not Found</title>
-                <style>
-                    body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }
-                    h1 { color: #721c24; }
-                </style>
-            </head>
-            <body>
-                <h1>Page Not Found</h1>
-                <p>The page you are looking for does not exist.</p>
-            </body>
-            </html>
-          dest: /var/www/html/404.html
-          mode: '0644'
-
-      - name: Check if web-tier directory exists (dynamic path)
-        ansible.builtin.stat:
-          path: "{{ actual_web_tier_path }}"
-        register: web_tier_dir
-
-      - name: Display web-tier path
-        ansible.builtin.debug:
-          msg: "Web tier path: {{ actual_web_tier_path }}, exists: {{ web_tier_dir.stat.exists }}"
-
-      - name: Install React dependencies
-        ansible.builtin.shell: |
-          cd {{ actual_web_tier_path }}
-          npm install
-        when: web_tier_dir.stat.exists
-        ignore_errors: yes
-
-      - name: Build React application
-        ansible.builtin.shell: |
-          cd {{ actual_web_tier_path }}
-          npm run build
-        when: web_tier_dir.stat.exists
-        ignore_errors: yes
-
-      - name: Create React build directory in /home/admin
-        ansible.builtin.file:
-          path: /home/admin/web-tier/build
-          state: directory
-          owner: admin
-          group: admin
-          mode: '0755'
-
-      - name: Copy build files to admin directory
-        ansible.builtin.shell: |
-          if [ -d "{{ actual_web_tier_path }}/build" ]; then
-            cp -r {{ actual_web_tier_path }}/build/* /home/admin/web-tier/build/
-            chown -R admin:admin /home/admin/web-tier/build
-          else
-            echo "Build directory not found, creating basic index.html"
-            echo '<!DOCTYPE html><html><head><title>AWS 3-Tier Web</title></head><body><h1>AWS 3-Tier Architecture</h1><p>Web tier is running!</p></body></html>' > /home/admin/web-tier/build/index.html
-            chown -R admin:admin /home/admin/web-tier/build
-          fi
-        when: web_tier_dir.stat.exists
-
-      - name: Set proper permissions for nginx access to admin directory
-        ansible.builtin.file:
-          path: "{{ item }}"
-          mode: 'o+x'
-        loop:
-          - /home
-          - /home/admin
-          - /home/admin/web-tier
-
-      - name: Set proper permissions for web build directory
-        ansible.builtin.file:
-          path: /home/admin/web-tier/build
-          owner: admin
-          group: admin
-          mode: '0755'
-          recurse: yes
-        when: web_tier_dir.stat.exists
-
-      - name: Create optimized Nginx configuration
-        ansible.builtin.copy:
-          content: |
-            user www-data;
-            worker_processes auto;
-            error_log /var/log/nginx/error.log;
-            pid /run/nginx.pid;
-            include /etc/nginx/modules-enabled/*.conf;
-
-            events {
-                worker_connections 1024;
-            }
-
-            http {
-                log_format main '$remote_addr - $remote_user [$time_local] "$request" '
-                               '$status $body_bytes_sent "$http_referer" '
-                               '"$http_user_agent" "$http_x_forwarded_for"';
-                access_log /var/log/nginx/access.log main;
                 
-                sendfile on;
-                tcp_nopush on;
-                tcp_nodelay on;
-                keepalive_timeout 65;
-                types_hash_max_size 4096;
+                <script>
+                function testAPI() {
+                    const result = document.getElementById('result');
+                    result.innerHTML = 'Testing connection...';
+                    
+                    fetch('/api/health')
+                        .then(response => response.json())
+                        .then(data => {
+                            result.innerHTML = `<strong>✅ Success!</strong> ${JSON.stringify(data, null, 2)}`;
+                        })
+                        .catch(error => {
+                            result.innerHTML = `<strong>❌ Error:</strong> ${error.message}`;
+                        });
+                }
+                </script>
+            </body>
+            </html>
+          dest: /var/www/html/index.html
+
+      - name: Configure Nginx
+        copy:
+          content: |
+            server {
+                listen 80 default_server;
+                listen [::]:80 default_server;
                 
-                include /etc/nginx/mime.types;
-                default_type application/octet-stream;
-
-                # Gzip compression
-                gzip on;
-                gzip_vary on;
-                gzip_min_length 1024;
-                gzip_types text/plain text/css application/json application/javascript text/xml application/xml;
-
-                server {
-                    listen 80;
-                    listen [::]:80;
-                    server_name _;
-
-                    # Health check endpoint
-                    location /health {
-                        default_type text/html;
-                        return 200 "<!DOCTYPE html><html><body><h1>Web Tier Health Check - OK</h1></body></html>\n";
-                    }
-
-                    # Serve React app static files
-                    location / {
-                        root /home/admin/web-tier/build;
-                        index index.html index.htm;
-                        try_files $uri $uri/ /index.html;
-                        
-                        # Cache static assets
-                        location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg)$ {
-                            expires 1y;
-                            add_header Cache-Control "public, immutable";
-                        }
-                    }
-
-                    # Proxy API requests to app server
-                    location /api/ {
-                        proxy_pass http://{{ app_server_ip }}:4000/;
-                        proxy_set_header Host $host;
-                        proxy_set_header X-Real-IP $remote_addr;
-                        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                        proxy_set_header X-Forwarded-Proto $scheme;
-                        
-                        # Timeouts
-                        proxy_connect_timeout 30s;
-                        proxy_send_timeout 30s;
-                        proxy_read_timeout 30s;
-                    }
-
-                    # Security headers
-                    add_header X-Frame-Options "SAMEORIGIN" always;
-                    add_header X-XSS-Protection "1; mode=block" always;
-                    add_header X-Content-Type-Options "nosniff" always;
-                    add_header Referrer-Policy "no-referrer-when-downgrade" always;
-
-                    # Error pages
-                    error_page 404 /404.html;
-                    error_page 500 502 503 504 /50x.html;
-                    
-                    location = /50x.html {
-                        root /var/www/html;
-                    }
-                    
-                    location = /404.html {
-                        root /var/www/html;
-                    }
+                root /var/www/html;
+                index index.html;
+                server_name _;
+                
+                # Health check
+                location /health {
+                    return 200 "Web Tier OK\n";
+                    add_header Content-Type text/plain;
+                }
+                
+                # Serve static files
+                location / {
+                    try_files $uri $uri/ =404;
+                }
+                
+                # Proxy API requests to app server
+                location /api/ {
+                    proxy_pass http://{{ app_server_ip }}:3000/;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
                 }
             }
-          dest: /etc/nginx/nginx.conf
-          backup: yes
-        when: ansible_os_family == "Debian"
-
-      - name: Create optimized Nginx configuration (RedHat)
-        ansible.builtin.copy:
-          content: |
-            user nginx;
-            worker_processes auto;
-            error_log /var/log/nginx/error.log;
-            pid /run/nginx.pid;
-
-            events {
-                worker_connections 1024;
-            }
-
-            http {
-                log_format main '$remote_addr - $remote_user [$time_local] "$request" '
-                               '$status $body_bytes_sent "$http_referer" '
-                               '"$http_user_agent" "$http_x_forwarded_for"';
-                access_log /var/log/nginx/access.log main;
-                
-                sendfile on;
-                tcp_nopush on;
-                tcp_nodelay on;
-                keepalive_timeout 65;
-                types_hash_max_size 4096;
-                
-                include /etc/nginx/mime.types;
-                default_type application/octet-stream;
-
-                # Gzip compression
-                gzip on;
-                gzip_vary on;
-                gzip_min_length 1024;
-                gzip_types text/plain text/css application/json application/javascript text/xml application/xml;
-
-                server {
-                    listen 80;
-                    listen [::]:80;
-                    server_name _;
-
-                    # Health check endpoint
-                    location /health {
-                        default_type text/html;
-                        return 200 "<!DOCTYPE html><html><body><h1>Web Tier Health Check - OK</h1></body></html>\n";
-                    }
-
-                    # Serve React app static files
-                    location / {
-                        root /home/admin/web-tier/build;
-                        index index.html index.htm;
-                        try_files $uri $uri/ /index.html;
-                        
-                        # Cache static assets
-                        location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg)$ {
-                            expires 1y;
-                            add_header Cache-Control "public, immutable";
-                        }
-                    }
-
-                    # Proxy API requests to app server
-                    location /api/ {
-                        proxy_pass http://{{ app_server_ip }}:4000/;
-                        proxy_set_header Host $host;
-                        proxy_set_header X-Real-IP $remote_addr;
-                        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                        proxy_set_header X-Forwarded-Proto $scheme;
-                        
-                        # Timeouts
-                        proxy_connect_timeout 30s;
-                        proxy_send_timeout 30s;
-                        proxy_read_timeout 30s;
-                    }
-
-                    # Security headers
-                    add_header X-Frame-Options "SAMEORIGIN" always;
-                    add_header X-XSS-Protection "1; mode=block" always;
-                    add_header X-Content-Type-Options "nosniff" always;
-                    add_header Referrer-Policy "no-referrer-when-downgrade" always;
-
-                    # Error pages
-                    error_page 404 /404.html;
-                    error_page 500 502 503 504 /50x.html;
-                    
-                    location = /50x.html {
-                        root /var/www/html;
-                    }
-                }
-            }
-          dest: /etc/nginx/nginx.conf
-          backup: yes
-        when: ansible_os_family == "RedHat"
-
-      - name: Set proper permissions for error pages (Ubuntu)
-        ansible.builtin.file:
-          path: /var/www/html
-          owner: www-data
-          group: www-data
-          mode: '0755'
-          recurse: yes
-        when: ansible_os_family == "Debian"
-
-      - name: Set proper permissions for error pages (RedHat)
-        ansible.builtin.file:
-          path: /var/www/html
-          owner: nginx
-          group: nginx
-          mode: '0755'
-          recurse: yes
-        when: ansible_os_family == "RedHat"
+          dest: /etc/nginx/sites-available/default
 
       - name: Start and enable Nginx
-        ansible.builtin.service:
+        service:
           name: nginx
           state: restarted
           enabled: yes
@@ -679,191 +156,119 @@
       when: "'web' in group_names"
 
     # ========================
-    # APPLICATION TIER (NODE)
+    # APP TIER (NODE.JS)
     # ========================
     - block:
-      - name: Install Node.js repository (Ubuntu/Debian)
-        ansible.builtin.shell: |
+      - name: Install Node.js
+        shell: |
           curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
-        when: ansible_os_family == "Debian"
+          apt-get install -y nodejs
 
-      - name: Install Node.js repository (RedHat)
-        ansible.builtin.shell: |
-          curl -fsSL https://rpm.nodesource.com/setup_18.x | bash -
-        when: ansible_os_family == "RedHat"
-
-      - name: Install Node.js and npm
-        ansible.builtin.package:
-          name:
-            - nodejs
-            - npm
-          state: present
-
-      - name: Verify Node.js and npm installation
-        ansible.builtin.shell: |
-          node --version
-          npm --version
-        register: node_version_app
-        changed_when: false
-
-      - name: Debug Node.js version on app server
-        debug:
-          var: node_version_app.stdout_lines
-
-      - name: Install PM2 globally
-        ansible.builtin.npm:
-          name: pm2
-          global: yes
-
-      - name: Set dynamic app-tier path
-        ansible.builtin.set_fact:
-          actual_app_tier_path: "{{ dest_dir }}/application-code/app-tier"
-        when: path_check.results[2].stat.exists
-
-      - name: Set alternative app-tier path
-        ansible.builtin.set_fact:
-          actual_app_tier_path: "{{ dest_dir }}/app-tier"
-        when: not path_check.results[2].stat.exists
-
-      - name: Check app-tier directory content
-        ansible.builtin.find:
-          paths: "{{ actual_app_tier_path }}"
-          patterns: "*"
-        register: app_tier_files
-        ignore_errors: yes
-
-      - name: Create fallback app-tier with sample Node.js app if none exists
-        ansible.builtin.file:
-          path: "{{ actual_app_tier_path }}"
+      - name: Create app directory
+        file:
+          path: /opt/app
           state: directory
           mode: '0755'
-        when: app_tier_files.matched == 0
 
-      - name: Create sample package.json for app-tier
-        ansible.builtin.copy:
-          content: |
-            {
-              "name": "app-tier",
-              "version": "1.0.0",
-              "description": "AWS 3-Tier Architecture App Tier",
-              "main": "index.js",
-              "scripts": {
-                "start": "node index.js",
-                "dev": "nodemon index.js"
-              },
-              "dependencies": {
-                "express": "^4.18.2",
-                "cors": "^2.8.5",
-                "dotenv": "^16.0.3",
-                "mysql2": "^3.2.0"
-              }
-            }
-          dest: "{{ actual_app_tier_path }}/package.json"
-          mode: '0644'
-        when: app_tier_files.matched == 0
-
-      - name: Create sample index.js for app-tier
-        ansible.builtin.copy:
+      - name: Create simple Node.js app
+        copy:
           content: |
             const express = require('express');
-            const cors = require('cors');
-            require('dotenv').config();
-
+            const mysql = require('mysql2');
             const app = express();
-            const PORT = process.env.PORT || 4000;
+            const PORT = 3000;
 
-            // Middleware
-            app.use(cors());
             app.use(express.json());
+
+            // Database connection
+            const db = mysql.createConnection({
+                host: '{{ database_endpoint.split(":")[0] }}',
+                user: 'admin',
+                password: 'Password123!',
+                database: 'webappdb'
+            });
 
             // Health check endpoint
             app.get('/health', (req, res) => {
-                res.status(200).json({
+                res.json({
                     status: 'OK',
-                    message: 'App Tier Health Check - Running',
-                    timestamp: new Date().toISOString(),
-                    environment: process.env.NODE_ENV || 'development'
+                    message: 'App Tier is running',
+                    timestamp: new Date().toISOString()
                 });
             });
 
-            // API endpoints
+            // Test database connection
+            app.get('/db-test', (req, res) => {
+                db.ping((err) => {
+                    if (err) {
+                        res.status(500).json({ error: 'Database connection failed', details: err.message });
+                    } else {
+                        res.json({ message: 'Database connection successful' });
+                    }
+                });
+            });
+
+            // Simple API endpoint
             app.get('/api/status', (req, res) => {
                 res.json({
-                    message: 'AWS 3-Tier Architecture App Tier',
-                    status: 'running',
-                    version: '1.0.0'
+                    service: 'AWS 3-Tier App',
+                    version: '1.0.0',
+                    status: 'running'
                 });
             });
 
-            // Database connection test endpoint
-            app.get('/api/db-test', (req, res) => {
-                res.json({
-                    message: 'Database connection test',
-                    db_host: process.env.DB_HOST || 'not configured',
-                    status: 'connected'
-                });
-            });
-
-            // Start server
             app.listen(PORT, '0.0.0.0', () => {
-                console.log(`App tier server running on port ${PORT}`);
-                console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+                console.log(`App tier running on port ${PORT}`);
             });
-          dest: "{{ actual_app_tier_path }}/index.js"
-          mode: '0644'
-        when: app_tier_files.matched == 0
+          dest: /opt/app/server.js
 
-      - name: Display found files in app-tier
-        ansible.builtin.debug:
-          msg: "App tier path: {{ actual_app_tier_path }}, files found: {{ app_tier_files.matched }}"
-
-      - name: Install application dependencies
-        ansible.builtin.shell: |
-          cd {{ actual_app_tier_path }}
-          npm install
-        when: app_tier_files.matched > 0 or app_tier_files.matched == 0
-        ignore_errors: yes
-
-      - name: Create app environment file
-        ansible.builtin.copy:
+      - name: Create package.json
+        copy:
           content: |
-            DB_HOST={{ database_endpoint.split(':')[0] }}
-            DB_NAME={{ database_name }}
-            DB_USER={{ database_user }}
-            DB_PASSWORD={{ database_password }}
-            PORT={{ app_port }}
-            NODE_ENV=production
-          dest: "{{ actual_app_tier_path }}/.env"
-          owner: appuser
-          group: appuser
-          mode: '0644'
+            {
+              "name": "aws-3tier-app",
+              "version": "1.0.0",
+              "description": "Simple 3-tier app",
+              "main": "server.js",
+              "scripts": {
+                "start": "node server.js"
+              },
+              "dependencies": {
+                "express": "^4.18.2",
+                "mysql2": "^3.2.0"
+              }
+            }
+          dest: /opt/app/package.json
 
-      - name: Stop old PM2 processes
-        ansible.builtin.shell: pm2 kill || true
-        become_user: appuser
-        become_method: sudo
-        become_flags: '-H -S'
-        ignore_errors: yes
+      - name: Install Node.js dependencies
+        shell: |
+          cd /opt/app
+          npm install
 
-      - name: Start application with PM2
-        ansible.builtin.shell: |
-          cd {{ actual_app_tier_path }}
-          pm2 start index.js --name "three-tier-app" || pm2 start app.js --name "three-tier-app"
-          pm2 save
-        become_user: appuser
-        become_method: sudo
-        become_flags: '-H -S'
+      - name: Create systemd service for app
+        copy:
+          content: |
+            [Unit]
+            Description=AWS 3-Tier App
+            After=network.target
 
-      - name: Configure PM2 startup
-        ansible.builtin.shell: |
-          pm2 startup systemd -u appuser --hp /home/appuser
-          pm2 save
-        ignore_errors: yes
+            [Service]
+            Type=simple
+            User=www-data
+            WorkingDirectory=/opt/app
+            ExecStart=/usr/bin/node server.js
+            Restart=always
+            RestartSec=10
+
+            [Install]
+            WantedBy=multi-user.target
+          dest: /etc/systemd/system/aws-3tier-app.service
+
+      - name: Start and enable app service
+        systemd:
+          name: aws-3tier-app
+          state: restarted
+          enabled: yes
+          daemon_reload: yes
 
       when: "'app' in group_names"
-
-  handlers:
-    - name: restart nginx
-      ansible.builtin.service:
-        name: nginx
-        state: restarted
