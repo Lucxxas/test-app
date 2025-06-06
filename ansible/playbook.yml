@@ -242,4 +242,52 @@
           global: yes
 
       - name: Vérifier l'existence du dossier app-tier
-        ansible
+        ansible.builtin.stat:
+          path: "{{ app_tier_path }}"
+        register: app_tier_dir
+
+      - name: Installer les dépendances de l'application
+        ansible.builtin.shell: |
+          cd {{ app_tier_path }}
+          npm install --production
+        when: app_tier_dir.stat.exists
+
+      - name: Create app environment file
+        copy:
+          content: |
+            DB_HOST={{ database_endpoint }}
+            DB_NAME={{ database_name }}
+            DB_USER={{ database_user }}
+            DB_PASSWORD={{ database_password }}
+            PORT=4000
+          dest: "{{ app_tier_path }}/.env"
+          owner: appuser
+          group: appuser
+          mode: '0644'
+
+      - name: Arrêter les anciens processus PM2
+        ansible.builtin.shell: pm2 kill
+        ignore_errors: yes
+        become_user: appuser
+
+      - name: Démarrer l'application avec PM2
+        ansible.builtin.shell: |
+          cd {{ app_tier_path }}
+          pm2 start index.js --name "three-tier-app"
+          pm2 save
+        become_user: appuser
+        when: app_tier_dir.stat.exists
+
+      - name: Configurer PM2 au démarrage
+        ansible.builtin.shell: |
+          pm2 startup
+          pm2 save
+        ignore_errors: yes
+
+      when: "'app' in group_names"
+
+  handlers:
+    - name: restart nginx
+      ansible.builtin.service:
+        name: nginx
+        state: restarted
