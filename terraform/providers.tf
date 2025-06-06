@@ -6,13 +6,14 @@ terraform {
       version = "~> 5.0"
     }
     tls = {
-      source  = "hashicorp/tls"
+      source  = "hashicorp/tls" 
       version = "~> 4.0"
     }
   }
 }
 
 provider "aws" {
-  region = "us-east-1"
-  # Credentials via Spacelift environment variables
+  region     = "us-east-1"
+  access_key = "ASIASJFXSSZBP7FQSLFQ"  # Votre nouvelle access key
+  secret_key = "CVz3G2oxLCSlgmqoIOUiSVInDTBj3Gw3Onm884ea"      # Votre secret key
 }
