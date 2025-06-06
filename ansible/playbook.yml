@@ -75,19 +75,34 @@
           - htop
         state: present
 
-    - name: Créer l'utilisateur pour l'application
-      ansible.builtin.user:
-        name: appuser
-        shell: /bin/bash
-        home: /home/appuser
-        create_home: yes
+    # Place ceci en tout début de bloc "Configuration 3-Tier AWS"
+    - name: Créer les utilisateurs nécessaires
+      block:
+        - name: Créer l'utilisateur appuser
+          ansible.builtin.user:
+            name: appuser
+            shell: /bin/bash
+            home: /home/appuser
+            create_home: yes
+    
+        - name: Créer l'utilisateur admin
+          ansible.builtin.user:
+            name: admin
+            shell: /bin/bash
+            home: /home/admin
+            create_home: yes
+    
+    - name: Supprimer le dépôt existant s'il bloque
+      ansible.builtin.file:
+        path: "{{ dest_dir }}"
+        state: absent
+      when: dest_dir_stat.stat.exists and not dest_dir_stat.stat.isdir
+    
+    - name: Vérifier l'état du répertoire de destination
+      ansible.builtin.stat:
+        path: "{{ dest_dir }}"
+      register: dest_dir_stat
 
-    - name: Créer l'utilisateur admin
-      ansible.builtin.user:
-        name: admin
-        shell: /bin/bash
-        home: /home/admin
-        create_home: yes
 
     - name: Cloner le repository AWS 3-tier
       ansible.builtin.git:
