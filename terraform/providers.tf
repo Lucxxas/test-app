@@ -5,10 +5,21 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
   }
 }
 
 provider "aws" {
   region = var.aws_region
-  # Les clés sont gérées par Spacelift via les variables d'environnement
+  # Credentials managed by Spacelift environment variables
+  # AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
+}
+
+variable "aws_region" {
+  description = "AWS region"
+  type        = string
+  default     = "us-east-1"
 }
