@@ -9,10 +9,12 @@
     - name: Get Terraform outputs via spacectl
       shell: spacectl stack output --id={{ terraform_stack_id }} --format=json
       register: terraform_outputs_raw
+      check_mode: no
 
     - name: Parse Terraform outputs
       set_fact:
         terraform_outputs: "{{ terraform_outputs_raw.stdout | from_json }}"
+      when: terraform_outputs_raw.stdout != ""
 
     - name: Extract IPs and endpoints
       set_fact:
@@ -20,12 +22,14 @@
         app_ip: "{{ terraform_outputs.app_instance_ip.value }}"
         db_endpoint: "{{ terraform_outputs.database_endpoint.value }}"
         ssh_private_key: "{{ terraform_outputs.ssh_private_key.value }}"
+      when: terraform_outputs is defined
 
     - name: Create SSH key file
       copy:
         content: "{{ ssh_private_key }}"
         dest: /tmp/ssh_key.pem
         mode: '0600'
+      when: ssh_private_key is defined
 
     - name: Create dynamic inventory
       copy:
@@ -47,6 +51,7 @@
           database_user=admin
           database_password=Password123!
         dest: ./dynamic_inventory.yml
+      when: web_ip is defined and app_ip is defined
 
     - name: Wait for instances to be SSH ready
       wait_for:
@@ -57,6 +62,7 @@
       loop:
         - "{{ web_ip }}"
         - "{{ app_ip }}"
+      when: web_ip is defined and app_ip is defined
 
     - name: Add hosts to in-memory inventory
       add_host:
@@ -69,6 +75,7 @@
       loop:
         - { name: "web_server", ip: "{{ web_ip }}", group: "web" }
         - { name: "app_server", ip: "{{ app_ip }}", group: "app" }
+      when: web_ip is defined and app_ip is defined
 
 # Play 2: Configuration 3-Tier AWS (Web + App tiers)
 - name: Configuration 3-Tier AWS (Web + App tiers)
