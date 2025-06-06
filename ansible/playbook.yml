@@ -520,7 +520,7 @@
 
       - name: Show nginx installation status
         ansible.builtin.debug:
-          msg: "Nginx installation status: {{ 'SUCCESS' if nginx_check.rc == 0 else 'FAILED' }}" yum
+          msg: "Nginx installation status: {{ 'SUCCESS' if nginx_check.rc == 0 else 'FAILED' }}"
           yum install -y nginx
         when: 
           - ansible_os_family == "RedHat" 
