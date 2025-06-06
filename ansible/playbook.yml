@@ -1,20 +1,22 @@
 ---
-# Play 1: Récupération des outputs Terraform et création de l'inventaire dynamique
+# Play 1: Récupération des outputs Terraform via API
 - name: Setup from Terraform outputs
   hosts: localhost
   gather_facts: no
   vars:
     terraform_stack_id: "test"
+    spacelift_api_endpoint: "{{ ansible_env.SPACELIFT_API_ENDPOINT | default('https://your-org.app.spacelift.io') }}"
+    spacelift_token: "{{ ansible_env.SPACELIFT_TOKEN | default('') }}"
   tasks:
-    - name: Get Terraform outputs via spacectl
-      shell: spacectl stack output --id={{ terraform_stack_id }} --format=json
-      register: terraform_outputs_raw
+    - name: Read Terraform outputs from file
+      slurp:
+        src: /tmp/terraform_outputs.json
+      register: terraform_outputs_file
       check_mode: no
 
     - name: Parse Terraform outputs
       set_fact:
-        terraform_outputs: "{{ terraform_outputs_raw.stdout | from_json }}"
-      when: terraform_outputs_raw.stdout != ""
+        terraform_outputs: "{{ terraform_outputs_file.content | b64decode | from_json }}"
 
     - name: Extract IPs and endpoints
       set_fact:
@@ -22,7 +24,6 @@
         app_ip: "{{ terraform_outputs.app_instance_ip.value }}"
         db_endpoint: "{{ terraform_outputs.database_endpoint.value }}"
         ssh_private_key: "{{ terraform_outputs.ssh_private_key.value }}"
-      when: terraform_outputs is defined
 
     - name: Create SSH key file
       copy:
