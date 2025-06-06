@@ -77,7 +77,7 @@ resource "aws_subnet" "TP-FINAL-WEB_subnet" {
 # Subnet APP (Public pour simplifier)
 resource "aws_subnet" "TP-FINAL-APP_subnet" {
   vpc_id                  = aws_vpc.TP-FINAL_vpc.id
-  cidr_block              = "192.0.2.0/24"
+  cidr_block              = "192.0.5.0/24"
   availability_zone       = "us-east-1b"
   map_public_ip_on_launch = true
 
@@ -89,7 +89,7 @@ resource "aws_subnet" "TP-FINAL-APP_subnet" {
 # Subnet DB (Private)
 resource "aws_subnet" "TP-FINAL-DB_subnet_1" {
   vpc_id            = aws_vpc.TP-FINAL_vpc.id
-  cidr_block        = "192.0.3.0/24"
+  cidr_block        = "192.0.6.0/24"
   availability_zone = "us-east-1a"
 
   tags = {
@@ -326,4 +326,35 @@ output "database_endpoint" {
 output "private_key_ssm_name" {
   description = "SSM Parameter name for SSH private key"
   value       = aws_ssm_parameter.private_key.name
+}
+
+# Stocker les IPs dans des fichiers pour Ansible
+resource "local_file" "ansible_ips" {
+  content = jsonencode({
+    web_ip = aws_instance.TP-FINAL-WEB.public_ip
+    app_ip = aws_instance.TP-FINAL-APP.public_ip
+    db_endpoint = aws_db_instance.TP-FINAL-DB.endpoint
+  })
+  filename = "../ansible/terraform_ips.json"
+  
+  depends_on = [
+    aws_instance.TP-FINAL-WEB,
+    aws_instance.TP-FINAL-APP,
+    aws_db_instance.TP-FINAL-DB
+  ]
+}
+
+# Null resource pour déclencher Ansible après création
+resource "null_resource" "run_ansible" {
+  triggers = {
+    web_ip = aws_instance.TP-FINAL-WEB.public_ip
+    app_ip = aws_instance.TP-FINAL-APP.public_ip
+    db_endpoint = aws_db_instance.TP-FINAL-DB.endpoint
+  }
+
+  provisioner "local-exec" {
+    command = "echo 'IPs stored for Ansible: WEB=${aws_instance.TP-FINAL-WEB.public_ip}, APP=${aws_instance.TP-FINAL-APP.public_ip}'"
+  }
+
+  depends_on = [local_file.ansible_ips]
 }
