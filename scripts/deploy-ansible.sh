@@ -3,23 +3,37 @@ set -e
 
 echo "🚀 Deploying 3-tier architecture with Ansible..."
 
-# Récupérer les IPs via AWS CLI (plus fiable que tofu output pendant hooks)
-echo "🔍 Getting instance IPs from AWS..."
+# Lire les IPs depuis le fichier créé par Terraform
+IP_FILE="../ansible/terraform_ips.json"
 
-WEB_IP=$(aws ec2 describe-instances \
-  --filters "Name=tag:Name,Values=TP-FINAL-WEB-instance" "Name=instance-state-name,Values=running" \
-  --query "Reservations[0].Instances[0].PublicIpAddress" \
-  --output text 2>/dev/null || echo "")
-
-APP_IP=$(aws ec2 describe-instances \
-  --filters "Name=tag:Name,Values=TP-FINAL-APP-instance" "Name=instance-state-name,Values=running" \
-  --query "Reservations[0].Instances[0].PublicIpAddress" \
-  --output text 2>/dev/null || echo "")
-
-DB_ENDPOINT=$(aws rds describe-db-instances \
-  --db-instance-identifier tp-final-database \
-  --query "DBInstances[0].Endpoint.Address" \
-  --output text 2>/dev/null || echo "")
+if [ ! -f "$IP_FILE" ]; then
+    echo "❌ IP file not found: $IP_FILE"
+    echo "🔍 Trying to create it manually..."
+    
+    # Fallback: essayer de créer le dossier et le fichier
+    mkdir -p ../ansible
+    
+    # Utiliser aws cli en fallback
+    WEB_IP=$(aws ec2 describe-instances \
+      --filters "Name=tag:Name,Values=TP-FINAL-WEB-instance" "Name=instance-state-name,Values=running" \
+      --query "Reservations[0].Instances[0].PublicIpAddress" \
+      --output text 2>/dev/null || echo "")
+    
+    APP_IP=$(aws ec2 describe-instances \
+      --filters "Name=tag:Name,Values=TP-FINAL-APP-instance" "Name=instance-state-name,Values=running" \
+      --query "Reservations[0].Instances[0].PublicIpAddress" \
+      --output text 2>/dev/null || echo "")
+    
+    DB_ENDPOINT=$(aws rds describe-db-instances \
+      --db-instance-identifier tp-final-database \
+      --query "DBInstances[0].Endpoint.Address" \
+      --output text 2>/dev/null || echo "")
+else
+    echo "📋 Reading IPs from: $IP_FILE"
+    WEB_IP=$(cat "$IP_FILE" | jq -r '.web_ip // empty')
+    APP_IP=$(cat "$IP_FILE" | jq -r '.app_ip // empty')
+    DB_ENDPOINT=$(cat "$IP_FILE" | jq -r '.db_endpoint // empty')
+fi
 
 if [ -z "$WEB_IP" ] || [ -z "$APP_IP" ] || [ "$WEB_IP" = "None" ] || [ "$APP_IP" = "None" ]; then
     echo "❌ Instance IPs not found"
@@ -42,12 +56,13 @@ chmod 600 /tmp/ansible_key
 echo "⏳ Waiting for instances..."
 sleep 120
 
-# Créer l'inventaire Ansible pour 3-tier
+# Aller dans le dossier ansible
 cd ../ansible/ 2>/dev/null || cd ansible/ || {
     echo "📁 Creating ansible directory..."
     mkdir -p ansible && cd ansible
 }
 
+# Créer l'inventaire Ansible
 cat > inventory.yml << EOF
 [web]
 $WEB_IP
@@ -74,36 +89,19 @@ EOF
 echo "📋 Generated inventory:"
 cat inventory.yml
 
-# Test de connectivité pour les instances EC2
-echo "🔍 Testing connectivity to WEB instance..."
-for i in {1..3}; do
-    if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i /tmp/ansible_key ubuntu@$WEB_IP "echo 'Connected to WEB'" 2>/dev/null; then
-        echo "✅ WEB instance connected"
-        break
-    else
-        echo "⏳ WEB connection attempt $i failed, retrying..."
-        sleep 30
-    fi
-    
-    if [ $i -eq 3 ]; then
-        echo "⚠️ WEB connection failed after 3 attempts, continuing..."
-    fi
-done
+# Test de connectivité simplifié
+echo "🔍 Testing SSH connectivity..."
+if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i /tmp/ansible_key ubuntu@$WEB_IP "echo 'WEB OK'" 2>/dev/null; then
+    echo "✅ WEB instance accessible"
+else
+    echo "⚠️ WEB instance not ready yet"
+fi
 
-echo "🔍 Testing connectivity to APP instance..."
-for i in {1..3}; do
-    if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i /tmp/ansible_key ubuntu@$APP_IP "echo 'Connected to APP'" 2>/dev/null; then
-        echo "✅ APP instance connected"
-        break
-    else
-        echo "⏳ APP connection attempt $i failed, retrying..."
-        sleep 30
-    fi
-    
-    if [ $i -eq 3 ]; then
-        echo "⚠️ APP connection failed after 3 attempts, continuing..."
-    fi
-done
+if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i /tmp/ansible_key ubuntu@$APP_IP "echo 'APP OK'" 2>/dev/null; then
+    echo "✅ APP instance accessible"
+else
+    echo "⚠️ APP instance not ready yet"
+fi
 
 # Lancer le playbook Ansible
 echo "🎭 Running Ansible playbook..."
