@@ -1,7 +1,4 @@
-# DB Subnet Group
-resource "aws_db_subnet_group" "TP-FINAL_db_subnet_group" {
-  name       = "tp-final-db-subnet-group-v2"  # Nouveau nom pour forcer recréation
-  # Configuration locale pour test
+# Configuration locale pour test
 locals {
   aws_region = "us-east-1"
 }
@@ -101,10 +98,6 @@ resource "aws_subnet" "TP-FINAL-DB_subnet_1" {
   vpc_id            = aws_vpc.TP-FINAL_vpc.id
   cidr_block        = "192.0.6.0/24"
   availability_zone = "us-east-1a"
-
-  lifecycle {
-    create_before_destroy = true
-  }
 
   tags = {
     Name = "TP-FINAL-DB-subnet-1"
@@ -240,10 +233,6 @@ resource "aws_security_group" "TP-FINAL_db_sg" {
 resource "aws_db_subnet_group" "TP-FINAL_db_subnet_group" {
   name       = "tp-final-db-subnet-group"
   subnet_ids = [aws_subnet.TP-FINAL-DB_subnet_1.id, aws_subnet.TP-FINAL-DB_subnet_2.id]
-
-  lifecycle {
-    create_before_destroy = true
-  }
 
   tags = {
     Name = "TP-FINAL DB subnet group"
