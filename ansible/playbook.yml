@@ -5,51 +5,28 @@
   gather_facts: yes
   connection: local
   tasks:
-    - name: Debug - Show all environment variables starting with TF_VAR
-      debug:
-        msg: "{{ item }}"
-      loop: "{{ ansible_env | dict2items | selectattr('key', 'match', 'TF_VAR_.*') | list }}"
-      when: ansible_env is defined
+    - name: Read values from files created by hook
+      slurp:
+        src: "{{ item.file }}"
+      register: ip_files
+      loop:
+        - { name: "web_ip", file: "/tmp/web_ip.txt" }
+        - { name: "app_ip", file: "/tmp/app_ip.txt" }
+        - { name: "db_endpoint", file: "/tmp/db_endpoint.txt" }
 
-    - name: Get IPs from environment variables
+    - name: Set facts from file content
       set_fact:
-        web_ip: "{{ lookup('env', 'TF_VAR_web_instance_ip') }}"
-        app_ip: "{{ lookup('env', 'TF_VAR_app_instance_ip') }}"
-        db_endpoint: "{{ lookup('env', 'TF_VAR_database_endpoint') }}"
+        web_ip: "{{ (ip_files.results | selectattr('item.name', 'equalto', 'web_ip') | first).content | b64decode | trim }}"
+        app_ip: "{{ (ip_files.results | selectattr('item.name', 'equalto', 'app_ip') | first).content | b64decode | trim }}"
+        db_endpoint: "{{ (ip_files.results | selectattr('item.name', 'equalto', 'db_endpoint') | first).content | b64decode | trim }}"
 
-    - name: Debug - Show retrieved values
+    - name: Debug - Show values from hook
       debug:
         msg:
           - "WEB_IP: {{ web_ip }}"
           - "APP_IP: {{ app_ip }}"
           - "DB_ENDPOINT: {{ db_endpoint }}"
-
-    - name: Fail if variables are empty
-      fail:
-        msg: "Environment variables are empty. Check Spacelift output references."
-      when: web_ip == "" or app_ip == "" or db_endpoint == ""
-
-    - name: Debug - Check if SSH key variable exists
-      debug:
-        msg: "TF_VAR_ssh_private_key exists: {{ lookup('env', 'TF_VAR_ssh_private_key') != '' }}"
-
-    - name: Get SSH key from environment variable
-      copy:
-        content: "{{ lookup('env', 'TF_VAR_ssh_private_key') }}"
-        dest: /tmp/ssh_key.pem
-        mode: '0600'
-      when: lookup('env', 'TF_VAR_ssh_private_key') != ""
-
-    - name: Fallback - Get SSH key from SSM Parameter Store
-      shell: |
-        aws ssm get-parameter --name "/ssh/TP-FINAL-keypair/private" --with-decryption --query 'Parameter.Value' --output text > /tmp/ssh_key.pem
-        chmod 600 /tmp/ssh_key.pem
-      environment:
-        AWS_DEFAULT_REGION: us-east-1
-        AWS_ACCESS_KEY_ID: "{{ lookup('env', 'AWS_ACCESS_KEY_ID') }}"
-        AWS_SECRET_ACCESS_KEY: "{{ lookup('env', 'AWS_SECRET_ACCESS_KEY') }}"
-      check_mode: no
-      when: lookup('env', 'TF_VAR_ssh_private_key') == ""
+          - "SSH key file exists: {{ '/tmp/ssh_key.pem' | file_exists }}"
 
     - name: Add hosts to inventory
       add_host:
