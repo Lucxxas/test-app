@@ -29,13 +29,21 @@
         msg: "Environment variables are empty. Check Spacelift output references."
       when: web_ip == "" or app_ip == "" or db_endpoint == ""
 
-    - name: Get SSH key from SSM Parameter Store
+    - name: Get SSH key from environment variable
+      copy:
+        content: "{{ lookup('env', 'TF_VAR_ssh_private_key') }}"
+        dest: /tmp/ssh_key.pem
+        mode: '0600'
+      when: lookup('env', 'TF_VAR_ssh_private_key') != ""
+
+    - name: Fallback - Get SSH key from SSM Parameter Store
       shell: |
         aws ssm get-parameter --name "/ssh/TP-FINAL-keypair/private" --with-decryption --query 'Parameter.Value' --output text > /tmp/ssh_key.pem
         chmod 600 /tmp/ssh_key.pem
       environment:
         AWS_DEFAULT_REGION: us-east-1
       check_mode: no
+      when: lookup('env', 'TF_VAR_ssh_private_key') == ""
 
     - name: Add hosts to inventory
       add_host:
