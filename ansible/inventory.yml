@@ -1,0 +1,12 @@
+[web]
+192.168.10.5
+
+[app]
+192.168.10.5
+
+[db]
+192.168.10.5
+
+[all:vars]
+ansible_user=ansible
+ansible_ssh_private_key_file=/home/ansible/.ssh/interne-luccky

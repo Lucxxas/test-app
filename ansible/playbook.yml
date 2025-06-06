@@ -1,0 +1,204 @@
+---
+- name: Configuration 3-Tier AWS (Web + App tiers)
+  hosts: all
+  become: yes
+  become_method: sudo
+  vars:
+    repo_url: https://github.com/aws-samples/aws-three-tier-web-architecture-workshop.git
+    dest_dir: /opt/aws-three-tier
+    app_port: 4000
+    web_tier_path: "{{ dest_dir }}/application-code/web-tier"
+    app_tier_path: "{{ dest_dir }}/application-code/app-tier"
+
+  tasks:
+    # ======================
+    # CONFIGURATION COMMUNE
+    # ======================
+    - name: Installer les paquets de base
+      ansible.builtin.package:
+        name:
+          - git
+          - curl
+          - unzip
+          - htop
+        state: present
+
+    - name: Créer l'utilisateur pour l'application
+      ansible.builtin.user:
+        name: appuser
+        shell: /bin/bash
+        home: /home/appuser
+        create_home: yes
+
+    - name: Créer l'utilisateur admin
+      ansible.builtin.user:
+        name: admin
+        shell: /bin/bash
+        home: /home/admin
+        create_home: yes
+
+    - name: Cloner le repository AWS 3-tier
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "{{ dest_dir }}"
+        version: main
+        force: yes
+
+    - name: Vérifier la structure du repository
+      ansible.builtin.find:
+        paths: "{{ dest_dir }}"
+        file_type: directory
+        recurse: no
+      register: repo_structure
+
+    - name: Afficher la structure du repository
+      ansible.builtin.debug:
+        var: repo_structure.files
+
+    - name: Ajuster les permissions du dossier
+      ansible.builtin.file:
+        path: "{{ dest_dir }}"
+        owner: appuser
+        group: appuser
+        recurse: yes
+
+    # =================
+    # TIER WEB (NGINX)
+    # =================
+    - block:
+      - name: Installer Nginx
+        ansible.builtin.package:
+          name: nginx
+          state: present
+
+      - name: Installer Node.js et npm pour build React
+        ansible.builtin.shell: |
+          curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
+          yum install -y nodejs
+        when: ansible_os_family == "RedHat"
+
+      - name: Installer Node.js et npm (Ubuntu/Debian)
+        ansible.builtin.package:
+          name:
+            - nodejs
+            - npm
+          state: present
+        when: ansible_os_family == "Debian"
+
+      - name: Créer le dossier build pour React
+        ansible.builtin.file:
+          path: /home/admin/web-tier
+          state: directory
+          owner: admin
+          group: admin
+          mode: '0755'
+
+      - name: Installer les dépendances React
+        ansible.builtin.shell: |
+          cd {{ web_tier_path }}
+          npm install
+
+      - name: Construire l'application React
+        ansible.builtin.shell: |
+          cd {{ web_tier_path }}
+          npm run build
+
+      - name: Copier les fichiers build vers le dossier web
+        ansible.builtin.copy:
+          src: "{{ web_tier_path }}/build/"
+          dest: /home/admin/web-tier/build/
+          remote_src: yes
+          owner: admin
+          group: admin
+          mode: '0755'
+
+      - name: Configurer Nginx avec le template
+        ansible.builtin.template:
+          src: nginx.conf.j2
+          dest: /etc/nginx/nginx.conf
+          backup: yes
+        notify: restart nginx
+
+      - name: Corriger les permissions pour nginx - dossiers parents
+        ansible.builtin.file:
+          path: "{{ item }}"
+          mode: 'o+x'
+        loop:
+          - /home
+          - /home/admin
+
+      - name: Corriger les permissions pour nginx - dossier web-tier
+        ansible.builtin.file:
+          path: /home/admin/web-tier/build
+          mode: 'o+rX'
+          recurse: yes
+
+      - name: Démarrer et activer Nginx
+        ansible.builtin.service:
+          name: nginx
+          state: started
+          enabled: yes
+
+      when: "'web' in group_names"
+
+    # ========================
+    # TIER APPLICATION (NODE)
+    # ========================
+    - block:
+      - name: Installer Node.js et npm pour app tier
+        ansible.builtin.shell: |
+          curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
+          yum install -y nodejs
+        when: ansible_os_family == "RedHat"
+
+      - name: Installer Node.js et npm (Ubuntu/Debian)
+        ansible.builtin.package:
+          name:
+            - nodejs
+            - npm
+          state: present
+        when: ansible_os_family == "Debian"
+
+      - name: Installer PM2 globalement
+        ansible.builtin.npm:
+          name: pm2
+          global: yes
+
+      - name: Vérifier le contenu du dossier app-tier
+        ansible.builtin.find:
+          paths: "{{ dest_dir }}/application-code/app-tier"
+          patterns: "*"
+        register: app_tier_files
+
+      - name: Afficher les fichiers trouvés
+        ansible.builtin.debug:
+          var: app_tier_files.files
+
+      - name: Installer les dépendances de l'application
+        ansible.builtin.shell: |
+          cd {{ dest_dir }}/application-code/app-tier
+          npm install
+
+      - name: Arrêter les anciens processus PM2
+        ansible.builtin.shell: pm2 kill
+        ignore_errors: yes
+
+      - name: Démarrer l'application avec PM2
+        ansible.builtin.shell: |
+          cd {{ dest_dir }}/application-code/app-tier
+          pm2 start index.js --name "three-tier-app"
+          pm2 save
+
+      - name: Configurer PM2 au démarrage
+        ansible.builtin.shell: |
+          pm2 startup
+          pm2 save
+        ignore_errors: yes
+
+      when: "'app' in group_names"
+
+  handlers:
+    - name: restart nginx
+      ansible.builtin.service:
+        name: nginx
+        state: restarted
