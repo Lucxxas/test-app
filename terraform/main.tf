@@ -9,13 +9,6 @@ resource "tls_private_key" "TP-FINAL_key" {
   rsa_bits  = 4096
 }
 
-# Écrire la clé privée directement dans un fichier
-resource "local_file" "private_key" {
-  content  = tls_private_key.TP-FINAL_key.private_key_pem
-  filename = "../ansible/TP-FINAL-keypair.pem"
-  file_permission = "0600"
-}
-
 # Store private key in SSM Parameter Store (optionnel, pour backup)
 resource "aws_ssm_parameter" "private_key" {
   name        = "/ssh/TP-FINAL-keypair/private"
@@ -340,3 +333,4 @@ output "ssh_private_key" {
   value       = tls_private_key.TP-FINAL_key.private_key_pem
   sensitive   = true
 }
+
