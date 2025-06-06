@@ -91,6 +91,7 @@
         shell: /bin/bash
         home: /home/appuser
         create_home: yes
+        state: present
 
     - name: Créer l'utilisateur admin
       ansible.builtin.user:
@@ -98,6 +99,18 @@
         shell: /bin/bash
         home: /home/admin
         create_home: yes
+        state: present
+
+    - name: Ensure user directories exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ item.split('/')[-1] }}"
+        group: "{{ item.split('/')[-1] }}"
+        mode: '0755'
+      loop:
+        - /home/appuser
+        - /home/admin
 
     - name: Cloner le repository AWS 3-tier
       ansible.builtin.git:
@@ -105,6 +118,17 @@
         dest: "{{ dest_dir }}"
         version: main
         force: yes
+
+    - name: Vérifier la structure du repository
+      ansible.builtin.find:
+        paths: "{{ dest_dir }}"
+        file_type: directory
+        recurse: no
+      register: repo_structure
+
+    - name: Afficher la structure du repository
+      ansible.builtin.debug:
+        var: repo_structure.files
 
     - name: Ajuster les permissions du dossier
       ansible.builtin.file:
@@ -117,33 +141,34 @@
     # TIER WEB (NGINX)
     # =================
     - block:
-      # Fix for Amazon Linux - Enable EPEL and install nginx
-      - name: Install EPEL repository (Amazon Linux)
+      # Installation spécifique nginx pour Amazon Linux avec plusieurs fallbacks
+      - name: Try EPEL repository installation (Amazon Linux)
         ansible.builtin.shell: |
           amazon-linux-extras install epel -y
         when: ansible_os_family == "RedHat" and ansible_distribution == "Amazon"
         ignore_errors: yes
 
-      - name: Alternative nginx installation for Amazon Linux
+      - name: Try nginx installation via amazon-linux-extras
         ansible.builtin.shell: |
           amazon-linux-extras install nginx1 -y
         when: ansible_os_family == "RedHat" and ansible_distribution == "Amazon"
         ignore_errors: yes
 
-      - name: Installer Nginx (standard)
+      - name: Try nginx installation via package manager
         ansible.builtin.package:
           name: nginx
           state: present
         ignore_errors: yes
 
-      - name: Verify nginx installation
-        ansible.builtin.shell: which nginx
+      - name: Check if nginx is installed
+        ansible.builtin.command: which nginx
         register: nginx_check
         ignore_errors: yes
 
-      - name: Install nginx from source if package failed (Amazon Linux fallback)
+      # Fallback: install nginx from source for Amazon Linux
+      - name: Install nginx from source (Amazon Linux fallback)
         block:
-          - name: Install compilation dependencies
+          - name: Install build dependencies
             ansible.builtin.package:
               name:
                 - gcc
@@ -152,12 +177,14 @@
                 - zlib-devel
                 - pcre-devel
                 - openssl-devel
+                - wget
               state: present
 
           - name: Download nginx source
             ansible.builtin.get_url:
               url: http://nginx.org/download/nginx-1.20.2.tar.gz
               dest: /tmp/nginx-1.20.2.tar.gz
+              mode: '0644'
 
           - name: Extract nginx source
             ansible.builtin.unarchive:
@@ -165,18 +192,91 @@
               dest: /tmp/
               remote_src: yes
 
+          - name: Create nginx user
+            ansible.builtin.user:
+              name: nginx
+              system: yes
+              shell: /bin/false
+              home: /var/cache/nginx
+              create_home: no
+
+          - name: Create nginx directories
+            ansible.builtin.file:
+              path: "{{ item }}"
+              state: directory
+              owner: nginx
+              group: nginx
+              mode: '0755'
+            loop:
+              - /var/cache/nginx
+              - /var/log/nginx
+              - /etc/nginx/conf.d
+
           - name: Compile and install nginx
             ansible.builtin.shell: |
               cd /tmp/nginx-1.20.2
-              ./configure --prefix=/etc/nginx --sbin-path=/usr/sbin/nginx --conf-path=/etc/nginx/nginx.conf --error-log-path=/var/log/nginx/error.log --http-log-path=/var/log/nginx/access.log --pid-path=/var/run/nginx.pid --lock-path=/var/run/nginx.lock
-              make && make install
+              ./configure \
+                --prefix=/etc/nginx \
+                --sbin-path=/usr/sbin/nginx \
+                --modules-path=/usr/lib64/nginx/modules \
+                --conf-path=/etc/nginx/nginx.conf \
+                --error-log-path=/var/log/nginx/error.log \
+                --http-log-path=/var/log/nginx/access.log \
+                --pid-path=/var/run/nginx.pid \
+                --lock-path=/var/run/nginx.lock \
+                --http-client-body-temp-path=/var/cache/nginx/client_temp \
+                --http-proxy-temp-path=/var/cache/nginx/proxy_temp \
+                --http-fastcgi-temp-path=/var/cache/nginx/fastcgi_temp \
+                --http-uwsgi-temp-path=/var/cache/nginx/uwsgi_temp \
+                --http-scgi-temp-path=/var/cache/nginx/scgi_temp \
+                --user=nginx \
+                --group=nginx \
+                --with-compat \
+                --with-file-aio \
+                --with-threads \
+                --with-http_addition_module \
+                --with-http_auth_request_module \
+                --with-http_dav_module \
+                --with-http_flv_module \
+                --with-http_gunzip_module \
+                --with-http_gzip_static_module \
+                --with-http_mp4_module \
+                --with-http_random_index_module \
+                --with-http_realip_module \
+                --with-http_secure_link_module \
+                --with-http_slice_module \
+                --with-http_ssl_module \
+                --with-http_stub_status_module \
+                --with-http_sub_module \
+                --with-http_v2_module \
+                --with-stream \
+                --with-stream_realip_module \
+                --with-stream_ssl_module \
+                --with-stream_ssl_preread_module
+              make -j$(nproc)
+              make install
 
-          - name: Create nginx service file
+          - name: Create basic nginx.conf for mime types
+            ansible.builtin.copy:
+              content: |
+                include /etc/nginx/mime.types;
+                default_type application/octet-stream;
+              dest: /etc/nginx/mime.types
+              backup: no
+
+          - name: Download mime.types
+            ansible.builtin.get_url:
+              url: https://raw.githubusercontent.com/nginx/nginx/master/conf/mime.types
+              dest: /etc/nginx/mime.types
+              mode: '0644'
+              backup: no
+
+          - name: Create nginx systemd service
             ansible.builtin.copy:
               content: |
                 [Unit]
-                Description=nginx HTTP Server
-                After=network.target
+                Description=The nginx HTTP and reverse proxy server
+                After=network.target remote-fs.target nss-lookup.target
 
                 [Service]
                 Type=forking
@@ -185,22 +285,25 @@
                 ExecStart=/usr/sbin/nginx
                 ExecReload=/bin/kill -s HUP $MAINPID
                 ExecStop=/bin/kill -s QUIT $MAINPID
+                KillSignal=SIGQUIT
+                TimeoutStopSec=5
+                KillMode=mixed
                 PrivateTmp=true
 
                 [Install]
                 WantedBy=multi-user.target
               dest: /etc/systemd/system/nginx.service
 
-          - name: Reload systemd
+          - name: Reload systemd daemon
             ansible.builtin.systemd:
               daemon_reload: yes
 
         when: nginx_check.rc != 0
 
       # Install Node.js BEFORE trying to use npm
-      - name: Install Node.js and npm (RedHat/CentOS/Amazon Linux)
+      - name: Install Node.js and npm pour build React (Amazon Linux)
         ansible.builtin.shell: |
-          curl -fsSL https://rpm.nodesource.com/setup_18.x | bash -
+          curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
           yum install -y nodejs
         when: ansible_os_family == "RedHat"
 
@@ -217,10 +320,12 @@
           node --version
           npm --version
         register: node_version
+        ignore_errors: yes
 
       - name: Debug Node.js version
         debug:
           var: node_version.stdout_lines
+        when: node_version is defined
 
       - name: Créer le dossier build pour React
         ansible.builtin.file:
@@ -235,10 +340,14 @@
           path: "{{ web_tier_path }}"
         register: web_tier_dir
 
+      - name: Afficher le chemin du web-tier
+        ansible.builtin.debug:
+          msg: "Web tier path: {{ web_tier_path }}, exists: {{ web_tier_dir.stat.exists }}"
+
       - name: Installer les dépendances React
         ansible.builtin.shell: |
           cd {{ web_tier_path }}
-          npm install --production
+          npm install
         when: web_tier_dir.stat.exists
         become_user: admin
 
@@ -259,21 +368,12 @@
           mode: '0755'
         when: web_tier_dir.stat.exists
 
-      - name: Create nginx configuration from template
-        template:
+      - name: Configurer Nginx avec le template
+        ansible.builtin.template:
           src: nginx.conf.j2
           dest: /etc/nginx/nginx.conf
           backup: yes
         notify: restart nginx
-
-      - name: Create nginx directories
-        ansible.builtin.file:
-          path: "{{ item }}"
-          state: directory
-          mode: '0755'
-        loop:
-          - /var/log/nginx
-          - /etc/nginx
 
       - name: Corriger les permissions pour nginx - dossiers parents
         ansible.builtin.file:
@@ -302,10 +402,9 @@
     # TIER APPLICATION (NODE)
     # ========================
     - block:
-      # Install Node.js FIRST, before trying to use npm
-      - name: Install Node.js and npm for app tier (RedHat/CentOS/Amazon Linux)
+      - name: Install Node.js et npm pour app tier (Amazon Linux)
         ansible.builtin.shell: |
-          curl -fsSL https://rpm.nodesource.com/setup_18.x | bash -
+          curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
           yum install -y nodejs
         when: ansible_os_family == "RedHat"
 
@@ -322,59 +421,68 @@
           node --version
           npm --version
         register: node_version_app
+        ignore_errors: yes
 
       - name: Debug Node.js version on app server
         debug:
           var: node_version_app.stdout_lines
+        when: node_version_app is defined
 
-      - name: Install PM2 globally
+      - name: Install PM2 globalement
         ansible.builtin.npm:
           name: pm2
           global: yes
 
-      - name: Vérifier l'existence du dossier app-tier
-        ansible.builtin.stat:
-          path: "{{ app_tier_path }}"
-        register: app_tier_dir
+      - name: Vérifier le contenu du dossier app-tier
+        ansible.builtin.find:
+          paths: "{{ app_tier_path }}"
+          patterns: "*"
+        register: app_tier_files
 
-      - name: Install application dependencies
+      - name: Afficher les fichiers trouvés dans app-tier
+        ansible.builtin.debug:
+          var: app_tier_files.files
+
+      - name: Installer les dépendances de l'application
         ansible.builtin.shell: |
           cd {{ app_tier_path }}
-          npm install --production
-        when: app_tier_dir.stat.exists
+          npm install
+        when: app_tier_files.matched > 0
         become_user: appuser
 
       - name: Create app environment file
-        copy:
+        ansible.builtin.copy:
           content: |
-            DB_HOST={{ database_endpoint }}
+            DB_HOST={{ database_endpoint.split(':')[0] }}
             DB_NAME={{ database_name }}
             DB_USER={{ database_user }}
             DB_PASSWORD={{ database_password }}
-            PORT=4000
+            PORT={{ app_port }}
           dest: "{{ app_tier_path }}/.env"
           owner: appuser
           group: appuser
           mode: '0644'
+        when: app_tier_files.matched > 0
 
-      - name: Stop old PM2 processes
+      - name: Arrêter les anciens processus PM2
         ansible.builtin.shell: pm2 kill
         ignore_errors: yes
         become_user: appuser
 
-      - name: Start application with PM2
+      - name: Démarrer l'application avec PM2
         ansible.builtin.shell: |
           cd {{ app_tier_path }}
           pm2 start index.js --name "three-tier-app"
           pm2 save
         become_user: appuser
-        when: app_tier_dir.stat.exists
+        when: app_tier_files.matched > 0
 
-      - name: Configure PM2 for startup
+      - name: Configurer PM2 au démarrage
         ansible.builtin.shell: |
           pm2 startup
           pm2 save
         ignore_errors: yes
+        become_user: appuser
 
       when: "'app' in group_names"
 
