@@ -26,8 +26,15 @@
           - "WEB_IP: {{ web_ip }}"
           - "APP_IP: {{ app_ip }}"
           - "DB_ENDPOINT: {{ db_endpoint }}"
-          - "SSH key file exists: {{ '/tmp/ssh_key.pem' | file_exists }}"
 
+    - name: Check if SSH key file exists
+      stat:
+        path: /tmp/ssh_key.pem
+      register: ssh_key_stat
+
+    - name: Debug - SSH key status
+      debug:
+        msg: "SSH key file exists: {{ ssh_key_stat.stat.exists }}"
     - name: Add hosts to inventory
       add_host:
         name: "{{ item.name }}"
