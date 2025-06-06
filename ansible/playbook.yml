@@ -1,37 +1,33 @@
 ---
-# Play 1: Récupération des outputs Terraform via API
-- name: Setup from Terraform outputs
+# Play 1: Setup depuis les variables d'environnement Spacelift
+- name: Setup from environment variables
   hosts: localhost
-  gather_facts: no
-  vars:
-    terraform_stack_id: "test"
-    spacelift_api_endpoint: "{{ ansible_env.SPACELIFT_API_ENDPOINT | default('https://your-org.app.spacelift.io') }}"
-    spacelift_token: "{{ ansible_env.SPACELIFT_TOKEN | default('') }}"
+  gather_facts: yes
+  connection: local
   tasks:
-    - name: Get outputs from Spacelift environment variables
-      set_fact:
-        web_ip: "{{ ansible_env.TF_VAR_web_instance_ip | default('') }}"
-        app_ip: "{{ ansible_env.TF_VAR_app_instance_ip | default('') }}"
-        db_endpoint: "{{ ansible_env.TF_VAR_database_endpoint | default('') }}"
-
-    - name: Debug - Show all environment variables
+    - name: Debug - Show all environment variables starting with TF_VAR
       debug:
-        var: ansible_env
+        msg: "{{ item }}"
+      loop: "{{ ansible_env | dict2items | selectattr('key', 'match', 'TF_VAR_.*') | list }}"
       when: ansible_env is defined
 
-    - name: Debug - Show specific variables
+    - name: Get IPs from environment variables
+      set_fact:
+        web_ip: "{{ lookup('env', 'TF_VAR_web_instance_ip') }}"
+        app_ip: "{{ lookup('env', 'TF_VAR_app_instance_ip') }}"
+        db_endpoint: "{{ lookup('env', 'TF_VAR_database_endpoint') }}"
+
+    - name: Debug - Show retrieved values
       debug:
         msg:
           - "WEB_IP: {{ web_ip }}"
           - "APP_IP: {{ app_ip }}"
           - "DB_ENDPOINT: {{ db_endpoint }}"
-          - "TF_VAR_web_instance_ip exists: {{ 'TF_VAR_web_instance_ip' in ansible_env }}"
-          - "TF_VAR_app_instance_ip exists: {{ 'TF_VAR_app_instance_ip' in ansible_env }}"
 
-    - name: Fail if required variables are missing
+    - name: Fail if variables are empty
       fail:
-        msg: "Required Terraform outputs not found. Please check Dependencies configuration."
-      when: (web_ip == "" or app_ip == "" or db_endpoint == "") and ansible_env is defined
+        msg: "Environment variables are empty. Check Spacelift output references."
+      when: web_ip == "" or app_ip == "" or db_endpoint == ""
 
     - name: Get SSH key from SSM Parameter Store
       shell: |
@@ -40,55 +36,7 @@
       environment:
         AWS_DEFAULT_REGION: us-east-1
 
-    - name: Debug - Show retrieved values
-      debug:
-        msg: 
-          - "WEB_IP: {{ web_ip }}"
-          - "APP_IP: {{ app_ip }}"
-          - "DB_ENDPOINT: {{ db_endpoint }}"
-          - "SSH_KEY: Retrieved from SSM"
-
-    - name: Create SSH key file
-      copy:
-        content: "{{ ssh_private_key }}"
-        dest: /tmp/ssh_key.pem
-        mode: '0600'
-      when: ssh_private_key is defined
-
-    - name: Create dynamic inventory
-      copy:
-        content: |
-          [web]
-          {{ web_ip }}
-          
-          [app]
-          {{ app_ip }}
-          
-          [db]
-          {{ db_endpoint }}
-          
-          [all:vars]
-          ansible_user=ec2-user
-          ansible_ssh_private_key_file=/tmp/ssh_key.pem
-          database_endpoint={{ db_endpoint }}
-          database_name=webappdb
-          database_user=admin
-          database_password=Password123!
-        dest: ./dynamic_inventory.yml
-      when: web_ip is defined and app_ip is defined
-
-    - name: Wait for instances to be SSH ready
-      wait_for:
-        host: "{{ item }}"
-        port: 22
-        delay: 10
-        timeout: 300
-      loop:
-        - "{{ web_ip }}"
-        - "{{ app_ip }}"
-      when: web_ip is defined and app_ip is defined
-
-    - name: Add hosts to in-memory inventory
+    - name: Add hosts to inventory
       add_host:
         name: "{{ item.name }}"
         ansible_host: "{{ item.ip }}"
@@ -99,7 +47,6 @@
       loop:
         - { name: "web_server", ip: "{{ web_ip }}", group: "web" }
         - { name: "app_server", ip: "{{ app_ip }}", group: "app" }
-      when: web_ip is defined and app_ip is defined
 
 # Play 2: Configuration 3-Tier AWS (Web + App tiers)
 - name: Configuration 3-Tier AWS (Web + App tiers)
@@ -112,7 +59,7 @@
     app_port: 4000
     web_tier_path: "{{ dest_dir }}/application-code/web-tier"
     app_tier_path: "{{ dest_dir }}/application-code/app-tier"
-    app_server_ip: "{{ hostvars[groups['app'][0]]['ansible_host'] | default('localhost') }}"
+    app_server_ip: "{{ hostvars['app_server']['ansible_host'] }}"
     database_endpoint: "{{ hostvars['localhost']['db_endpoint'] }}"
     database_name: "webappdb"
     database_user: "admin"
@@ -224,7 +171,7 @@
           mode: '0755'
         when: web_tier_dir.stat.exists
 
-      - name: Create nginx configuration template
+      - name: Create nginx configuration
         copy:
           content: |
             events { worker_connections 1024; }
@@ -295,52 +242,4 @@
           global: yes
 
       - name: Vérifier l'existence du dossier app-tier
-        ansible.builtin.stat:
-          path: "{{ app_tier_path }}"
-        register: app_tier_dir
-
-      - name: Installer les dépendances de l'application
-        ansible.builtin.shell: |
-          cd {{ app_tier_path }}
-          npm install --production
-        when: app_tier_dir.stat.exists
-
-      - name: Create app environment file
-        copy:
-          content: |
-            DB_HOST={{ database_endpoint }}
-            DB_NAME={{ database_name }}
-            DB_USER={{ database_user }}
-            DB_PASSWORD={{ database_password }}
-            PORT=4000
-          dest: "{{ app_tier_path }}/.env"
-          owner: appuser
-          group: appuser
-          mode: '0644'
-
-      - name: Arrêter les anciens processus PM2
-        ansible.builtin.shell: pm2 kill
-        ignore_errors: yes
-        become_user: appuser
-
-      - name: Démarrer l'application avec PM2
-        ansible.builtin.shell: |
-          cd {{ app_tier_path }}
-          pm2 start index.js --name "three-tier-app"
-          pm2 save
-        become_user: appuser
-        when: app_tier_dir.stat.exists
-
-      - name: Configurer PM2 au démarrage
-        ansible.builtin.shell: |
-          pm2 startup
-          pm2 save
-        ignore_errors: yes
-
-      when: "'app' in group_names"
-
-  handlers:
-    - name: restart nginx
-      ansible.builtin.service:
-        name: nginx
-        state: restarted
+        ansible
