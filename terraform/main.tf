@@ -190,14 +190,3 @@ resource "aws_instance" "TP-FINAL-MAIN" {
     Name = "TP-FINAL-MAIN-instance"
   }
 }
-
-# Outputs pour Ansible
-output "instance_ips" {
-  description = "Public IP of the main instance"
-  value       = aws_instance.TP-FINAL-MAIN.public_ip
-}
-
-output "private_key_ssm_name" {
-  description = "SSM Parameter name for SSH private key"
-  value       = aws_ssm_parameter.private_key.name
-}
