@@ -50,225 +50,206 @@
           - git
           - htop
         state: present
+- name: Configuration 3-Tier AWS (Web + App tiers)
+  hosts: all
+  become: yes
+  become_method: sudo
+  vars:
+    repo_url: https://github.com/aws-samples/aws-three-tier-web-architecture-workshop.git
+    dest_dir: /opt/aws-three-tier
+    app_port: 4000
+    web_tier_path: "{{ dest_dir }}/application-code/web-tier"
+    app_tier_path: "{{ dest_dir }}/application-code/app-tier"
+
+  tasks:
+    # ======================
+    # CONFIGURATION COMMUNE
+    # ======================
+    - name: Installer les paquets de base
+      ansible.builtin.package:
+        name:
+          - git
+          - curl
+          - unzip
+          - htop
+        state: present
+
+    - name: Créer l'utilisateur pour l'application
+      ansible.builtin.user:
+        name: appuser
+        shell: /bin/bash
+        home: /home/appuser
+        create_home: yes
+
+    - name: Créer l'utilisateur admin
+      ansible.builtin.user:
+        name: admin
+        shell: /bin/bash
+        home: /home/admin
+        create_home: yes
+
+    - name: Cloner le repository AWS 3-tier
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "{{ dest_dir }}"
+        version: main
+        force: yes
+
+    - name: Vérifier la structure du repository
+      ansible.builtin.find:
+        paths: "{{ dest_dir }}"
+        file_type: directory
+        recurse: no
+      register: repo_structure
+
+    - name: Afficher la structure du repository
+      ansible.builtin.debug:
+        var: repo_structure.files
+
+    - name: Ajuster les permissions du dossier
+      ansible.builtin.file:
+        path: "{{ dest_dir }}"
+        owner: appuser
+        group: appuser
+        recurse: yes
 
     # =================
-    # WEB TIER (NGINX)
+    # TIER WEB (NGINX)
     # =================
     - block:
-      - name: Install Nginx
-        package:
+      - name: Installer Nginx
+        ansible.builtin.package:
           name: nginx
           state: present
 
-      - name: Create simple web page
-        copy:
-          content: |
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>AWS 3-Tier Architecture</title>
-                <style>
-                    body { font-family: Arial, sans-serif; margin: 40px; background: #f0f0f0; }
-                    .container { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-                    h1 { color: #FF9900; }
-                    .status { background: #d4edda; padding: 15px; border-radius: 4px; margin: 20px 0; }
-                    button { background: #FF9900; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; }
-                    #result { margin-top: 20px; padding: 10px; background: #f8f9fa; border-radius: 4px; }
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <h1>🚀 AWS 3-Tier Architecture</h1>
-                    <div class="status">
-                        ✅ <strong>Web Tier</strong> - Running successfully!
-                    </div>
-                    
-                    <h2>Test API Connection</h2>
-                    <button onclick="testAPI()">Test App Tier Connection</button>
-                    <div id="result"></div>
-                    
-                    <h2>Architecture Components</h2>
-                    <ul>
-                        <li><strong>Web Tier:</strong> Nginx serving this page</li>
-                        <li><strong>App Tier:</strong> Node.js API server</li>
-                        <li><strong>Database Tier:</strong> MySQL RDS</li>
-                    </ul>
-                </div>
-                
-                <script>
-                function testAPI() {
-                    const result = document.getElementById('result');
-                    result.innerHTML = 'Testing connection...';
-                    
-                    fetch('/api/health')
-                        .then(response => response.json())
-                        .then(data => {
-                            result.innerHTML = `<strong>✅ Success!</strong> ${JSON.stringify(data, null, 2)}`;
-                        })
-                        .catch(error => {
-                            result.innerHTML = `<strong>❌ Error:</strong> ${error.message}`;
-                        });
-                }
-                </script>
-            </body>
-            </html>
-          dest: /var/www/html/index.html
+      - name: Installer Node.js et npm pour build React
+        ansible.builtin.shell: |
+          curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
+          yum install -y nodejs
+        when: ansible_os_family == "RedHat"
 
-      - name: Configure Nginx
-        copy:
-          content: |
-            server {
-                listen 80 default_server;
-                listen [::]:80 default_server;
-                
-                root /var/www/html;
-                index index.html;
-                server_name _;
-                
-                # Health check
-                location /health {
-                    return 200 "Web Tier OK\n";
-                    add_header Content-Type text/plain;
-                }
-                
-                # Serve static files
-                location / {
-                    try_files $uri $uri/ =404;
-                }
-                
-                # Proxy API requests to app server
-                location /api/ {
-                    proxy_pass http://{{ app_server_ip }}:3000/;
-                    proxy_set_header Host $host;
-                    proxy_set_header X-Real-IP $remote_addr;
-                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                    proxy_set_header X-Forwarded-Proto $scheme;
-                }
-            }
-          dest: /etc/nginx/sites-available/default
+      - name: Installer Node.js et npm (Ubuntu/Debian)
+        ansible.builtin.package:
+          name:
+            - nodejs
+            - npm
+          state: present
+        when: ansible_os_family == "Debian"
 
-      - name: Start and enable Nginx
-        service:
+      - name: Créer le dossier build pour React
+        ansible.builtin.file:
+          path: /home/admin/web-tier
+          state: directory
+          owner: admin
+          group: admin
+          mode: '0755'
+
+      - name: Installer les dépendances React
+        ansible.builtin.shell: |
+          cd {{ web_tier_path }}
+          npm install
+
+      - name: Construire l'application React
+        ansible.builtin.shell: |
+          cd {{ web_tier_path }}
+          npm run build
+
+      - name: Copier les fichiers build vers le dossier web
+        ansible.builtin.copy:
+          src: "{{ web_tier_path }}/build/"
+          dest: /home/admin/web-tier/build/
+          remote_src: yes
+          owner: admin
+          group: admin
+          mode: '0755'
+
+      - name: Configurer Nginx avec le template
+        ansible.builtin.template:
+          src: nginx.conf.j2
+          dest: /etc/nginx/nginx.conf
+          backup: yes
+        notify: restart nginx
+
+      - name: Corriger les permissions pour nginx - dossiers parents
+        ansible.builtin.file:
+          path: "{{ item }}"
+          mode: 'o+x'
+        loop:
+          - /home
+          - /home/admin
+
+      - name: Corriger les permissions pour nginx - dossier web-tier
+        ansible.builtin.file:
+          path: /home/admin/web-tier/build
+          mode: 'o+rX'
+          recurse: yes
+
+      - name: Démarrer et activer Nginx
+        ansible.builtin.service:
           name: nginx
-          state: restarted
+          state: started
           enabled: yes
 
       when: "'web' in group_names"
 
     # ========================
-    # APP TIER (NODE.JS)
+    # TIER APPLICATION (NODE)
     # ========================
     - block:
-      - name: Install Node.js
-        shell: |
-          curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
-          apt-get install -y nodejs
+      - name: Installer Node.js et npm pour app tier
+        ansible.builtin.shell: |
+          curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
+          yum install -y nodejs
+        when: ansible_os_family == "RedHat"
 
-      - name: Create app directory
-        file:
-          path: /opt/app
-          state: directory
-          mode: '0755'
+      - name: Installer Node.js et npm (Ubuntu/Debian)
+        ansible.builtin.package:
+          name:
+            - nodejs
+            - npm
+          state: present
+        when: ansible_os_family == "Debian"
 
-      - name: Create simple Node.js app
-        copy:
-          content: |
-            const express = require('express');
-            const mysql = require('mysql2');
-            const app = express();
-            const PORT = 3000;
+      - name: Installer PM2 globalement
+        ansible.builtin.npm:
+          name: pm2
+          global: yes
 
-            app.use(express.json());
+      - name: Vérifier le contenu du dossier app-tier
+        ansible.builtin.find:
+          paths: "{{ dest_dir }}/application-code/app-tier"
+          patterns: "*"
+        register: app_tier_files
 
-            // Database connection
-            const db = mysql.createConnection({
-                host: '{{ database_endpoint.split(":")[0] }}',
-                user: 'admin',
-                password: 'Password123!',
-                database: 'webappdb'
-            });
+      - name: Afficher les fichiers trouvés
+        ansible.builtin.debug:
+          var: app_tier_files.files
 
-            // Health check endpoint
-            app.get('/health', (req, res) => {
-                res.json({
-                    status: 'OK',
-                    message: 'App Tier is running',
-                    timestamp: new Date().toISOString()
-                });
-            });
-
-            // Test database connection
-            app.get('/db-test', (req, res) => {
-                db.ping((err) => {
-                    if (err) {
-                        res.status(500).json({ error: 'Database connection failed', details: err.message });
-                    } else {
-                        res.json({ message: 'Database connection successful' });
-                    }
-                });
-            });
-
-            // Simple API endpoint
-            app.get('/api/status', (req, res) => {
-                res.json({
-                    service: 'AWS 3-Tier App',
-                    version: '1.0.0',
-                    status: 'running'
-                });
-            });
-
-            app.listen(PORT, '0.0.0.0', () => {
-                console.log(`App tier running on port ${PORT}`);
-            });
-          dest: /opt/app/server.js
-
-      - name: Create package.json
-        copy:
-          content: |
-            {
-              "name": "aws-3tier-app",
-              "version": "1.0.0",
-              "description": "Simple 3-tier app",
-              "main": "server.js",
-              "scripts": {
-                "start": "node server.js"
-              },
-              "dependencies": {
-                "express": "^4.18.2",
-                "mysql2": "^3.2.0"
-              }
-            }
-          dest: /opt/app/package.json
-
-      - name: Install Node.js dependencies
-        shell: |
-          cd /opt/app
+      - name: Installer les dépendances de l'application
+        ansible.builtin.shell: |
+          cd {{ dest_dir }}/application-code/app-tier
           npm install
 
-      - name: Create systemd service for app
-        copy:
-          content: |
-            [Unit]
-            Description=AWS 3-Tier App
-            After=network.target
+      - name: Arrêter les anciens processus PM2
+        ansible.builtin.shell: pm2 kill
+        ignore_errors: yes
 
-            [Service]
-            Type=simple
-            User=www-data
-            WorkingDirectory=/opt/app
-            ExecStart=/usr/bin/node server.js
-            Restart=always
-            RestartSec=10
+      - name: Démarrer l'application avec PM2
+        ansible.builtin.shell: |
+          cd {{ dest_dir }}/application-code/app-tier
+          pm2 start index.js --name "three-tier-app"
+          pm2 save
 
-            [Install]
-            WantedBy=multi-user.target
-          dest: /etc/systemd/system/aws-3tier-app.service
-
-      - name: Start and enable app service
-        systemd:
-          name: aws-3tier-app
-          state: restarted
-          enabled: yes
-          daemon_reload: yes
+      - name: Configurer PM2 au démarrage
+        ansible.builtin.shell: |
+          pm2 startup
+          pm2 save
+        ignore_errors: yes
 
       when: "'app' in group_names"
+
+  handlers:
+    - name: restart nginx
+      ansible.builtin.service:
+        name: nginx
+        state: restarted
