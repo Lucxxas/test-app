@@ -111,13 +111,14 @@
           owner: admin
           group: admin
           mode: '0755'
-
+       
       - name: Configurer Nginx avec le template
         ansible.builtin.template:
           src: nginx.conf.j2
           dest: /etc/nginx/nginx.conf
           backup: yes
-        notify: restart nginx
+          notify: restart nginx  
+
 
       - name: Corriger les permissions pour nginx - dossiers parents
         ansible.builtin.file:
